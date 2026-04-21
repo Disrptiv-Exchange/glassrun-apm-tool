@@ -1,0 +1,23 @@
+name: Enforce JIRA-style branch names
+
+on:
+  pull_request:
+    branches: [ "dev" ]   # Only when PR targets the dev branch
+
+jobs:
+  branch-name-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Validate source branch name
+        run: |
+          BR="${{ github.head_ref }}"   # source branch of the PR
+          echo "Source branch: $BR"
+          if [[ "$BR" =~ ^GR-[0-9]+$ ]]; then
+            echo "✅ Branch name is valid."
+          else
+            echo "::error title=Invalid branch name::Branch '$BR' must match ^GR-[0-9]+$ (e.g., GR-6504)."
+            exit 1
+          fi
