@@ -19,7 +19,8 @@ export type {
 export type { ApmConfig } from './lib/interfaces/apm-config.interface';
 export type { ApmTransport } from './lib/interfaces/apm-transport.interface';
 export type { ApmUserProvider, ApmUserInfo } from './lib/interfaces/apm-user-provider.interface';
-export type { ApmDeviceDetector } from './lib/interfaces/apm-device-detector.interface';
+export type { ApmDeviceDetector, ApmBatteryInfo, ApmStorageInfo } from './lib/interfaces/apm-device-detector.interface';
+export type { Breadcrumb } from './lib/services/monitoring.service';
 
 // Tokens
 export { APM_CONFIG, APM_TRANSPORT, APM_USER_PROVIDER, APM_DEVICE_DETECTOR } from './lib/tokens/injection-tokens';

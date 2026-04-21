@@ -1,5 +1,6 @@
-import { Provider, EnvironmentProviders, makeEnvironmentProviders, APP_INITIALIZER, ErrorHandler, Type } from '@angular/core';
+import { Provider, EnvironmentProviders, makeEnvironmentProviders, APP_INITIALIZER, ErrorHandler, Type, Optional, Injector, ApplicationRef } from '@angular/core';
 import { HTTP_INTERCEPTORS } from '@angular/common/http';
+import { Router } from '@angular/router';
 import { MonitoringService } from '../services/monitoring.service';
 import { RouteMonitoringService } from '../services/route-monitoring.service';
 import { MonitoringHttpInterceptor } from '../interceptors/monitoring-http.interceptor';
@@ -48,8 +49,12 @@ export function initializeMonitoring(
   config: ApmConfig
 ) {
   return () => {
-    monitoringService.init(config);
-    routeMonitoringService.init();
+    try {
+      monitoringService.init(config);
+      routeMonitoringService.init();
+    } catch {
+      /* Never let APM initialization crash the app */
+    }
     return Promise.resolve();
   };
 }
@@ -73,9 +78,21 @@ export function getApmProviders(options: ApmProviderOptions): Provider[] {
       { provide: APM_DEVICE_DETECTOR, useClass: options.deviceDetector }
     ] : []),
 
-    // Core services
-    MonitoringService,
-    RouteMonitoringService,
+    // Core services — use useFactory to ensure proper DI context
+    {
+      provide: MonitoringService,
+      useFactory: (transport: ApmTransport, userProvider: ApmUserProvider | null, deviceDetector: ApmDeviceDetector | null, config: ApmConfig) => {
+        return new MonitoringService(transport, userProvider, deviceDetector, config);
+      },
+      deps: [APM_TRANSPORT, [new Optional(), APM_USER_PROVIDER], [new Optional(), APM_DEVICE_DETECTOR], APM_CONFIG]
+    },
+    {
+      provide: RouteMonitoringService,
+      useFactory: (router: Router, appRef: ApplicationRef, ms: MonitoringService) => {
+        return new RouteMonitoringService(router, appRef, ms);
+      },
+      deps: [Router, ApplicationRef, MonitoringService]
+    },
 
     // HTTP Interceptor
     {
@@ -84,11 +101,11 @@ export function getApmProviders(options: ApmProviderOptions): Provider[] {
       multi: true
     },
 
-    // Custom Error Handler
-    {
-      provide: ErrorHandler,
-      useClass: GlobalErrorHandler
-    },
+    // Custom Error Handler - TEMPORARILY DISABLED FOR DIAGNOSIS
+    // {
+    //   provide: ErrorHandler,
+    //   useClass: GlobalErrorHandler
+    // },
 
     // App Initializer
     {

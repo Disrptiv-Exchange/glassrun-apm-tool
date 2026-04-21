@@ -323,6 +323,13 @@ export class MonitoringHttpInterceptor implements HttpInterceptor {
               } : null
             };
             this.monitoringService.logPerformanceData('API_CALL', logObj);
+            // GR-9408: record breadcrumb for this HTTP call
+            try {
+              this.monitoringService.addBreadcrumb('http', `${request.method} ${this.getUrlPath(request.url)}`, {
+                status: event.status,
+                durationMs: Math.round(jsDuration)
+              });
+            } catch { /* ignore */ }
             if (this.activeSpans.has(requestId)) {
               this.monitoringService.endSpan(span.id, event.status >= 400 ? 'failure' : 'success');
             }
@@ -412,6 +419,14 @@ export class MonitoringHttpInterceptor implements HttpInterceptor {
           ErrorUrl: span.context.http?.url
         };
         this.monitoringService.logPerformanceData('API_CALL', logObj);
+        // GR-9408: record breadcrumb for failed HTTP call
+        try {
+          this.monitoringService.addBreadcrumb('http', `${request.method} ${this.getUrlPath(request.url)} FAILED`, {
+            status: error.status,
+            errorType: error.name,
+            durationMs: Math.round(duration)
+          });
+        } catch { /* ignore */ }
         // End span if it was created by monitoringService
         if (this.activeSpans.has(requestId)) {
           this.monitoringService.endSpan(span.id, 'failure');

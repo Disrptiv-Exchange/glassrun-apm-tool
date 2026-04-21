@@ -22,10 +22,10 @@ export class GlobalErrorHandler implements ErrorHandler {
       state: this.getComponentState()
     });
 
-    // #6 Log to console instead of re-throwing to prevent double-reporting
-    // Re-throwing causes Angular's default handler to also fire, and can cause
-    // silent bootstrap failures (blank screen) when errors occur during initialization
-    console.error('Angular Error:', error);
+    // Re-throw so Angular's Zone-aware error reporting continues normally.
+    // Not re-throwing causes Angular's bootstrap/change-detection to behave
+    // inconsistently, resulting in silent blank screens.
+    throw error;
   }
 
   private getComponentState(): any {

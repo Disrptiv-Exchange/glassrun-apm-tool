@@ -6,10 +6,29 @@ import { Transaction, Span, TransactionContext, SpanContext } from '../interface
 import { ApmConfig } from '../interfaces/apm-config.interface';
 import { ApmTransport } from '../interfaces/apm-transport.interface';
 import { ApmUserProvider } from '../interfaces/apm-user-provider.interface';
-import { ApmDeviceDetector } from '../interfaces/apm-device-detector.interface';
+import { ApmDeviceDetector, ApmBatteryInfo, ApmStorageInfo } from '../interfaces/apm-device-detector.interface';
 import { APM_CONFIG, APM_TRANSPORT, APM_USER_PROVIDER, APM_DEVICE_DETECTOR } from '../tokens/injection-tokens';
 import { generateUUID } from '../utils/uuid';
 import { tryGetCapacitorAppInfo, tryGetCapacitorDeviceInfo } from '../utils/capacitor-helpers';
+
+/** GR-9408: Breadcrumb entry — represents a user action leading up to an error */
+export interface Breadcrumb {
+  timestamp: number;
+  category: 'navigation' | 'http' | 'ui' | 'error' | 'custom';
+  message: string;
+  data?: Record<string, any>;
+}
+
+/** GR-9408: Offline queue entry — wraps a log with queue metadata */
+interface OfflineQueueEntry {
+  logType: string;
+  data: Record<string, unknown>;
+  queuedAtMs: number;
+}
+
+/** GR-9408: Localstorage keys */
+const LS_COLD_START_FLAG = 'apm_cold_start_done';
+const LS_OFFLINE_QUEUE = 'apm_offline_queue';
 
 interface ErrorData {
   message: string;
@@ -82,6 +101,24 @@ export class MonitoringService {
 
   // #3 Monkey-patching: recursion guard for console override
   private isCapturingConsoleError = false;
+
+  // GR-9408: Breadcrumb ring buffer (recent user actions)
+  private breadcrumbs: Breadcrumb[] = [];
+
+  // GR-9408: Cold start tracking
+  private coldStartTimeMs: number | null = null;
+  private isColdStartSession = false;
+  private coldStartReported = false;
+  private sessionStartPerfNow = 0;
+
+  // GR-9408: Cached battery/storage info (refreshed periodically for mobile)
+  private cachedBatteryInfo: ApmBatteryInfo | null = null;
+  private cachedStorageInfo: ApmStorageInfo | null = null;
+  private lastBatteryStorageRefresh = 0;
+  private readonly BATTERY_STORAGE_REFRESH_INTERVAL = 30000; // 30s
+
+  // GR-9408: Offline queue
+  private offlineFlushScheduled = false;
 
   private async getNetworkInfo(): Promise<{
     networkType: string;
@@ -245,10 +282,10 @@ export class MonitoringService {
     @Optional() @Inject(APM_DEVICE_DETECTOR) private deviceDetector: ApmDeviceDetector | null,
     @Inject(APM_CONFIG) configInput: ApmConfig
   ) {
-    // Only store config in constructor - no side effects.
-    // All aggressive global overrides are deferred to init() which runs
-    // via APP_INITIALIZER after Angular's DI is fully resolved.
     this.config = { ...this.getDefaultConfig(), ...configInput };
+    // GR-9408: record session start time for cold start calculation
+    this.sessionStartPerfNow = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+    this.detectColdStart();
   }
 
   /**
@@ -256,67 +293,246 @@ export class MonitoringService {
    * Called by APP_INITIALIZER after DI is complete.
    */
   init(config: Partial<ApmConfig>): void {
-    if (this.isInitialized) return;
-    this.config = { ...this.config, ...config };
-    this.isInitialized = true;
+    try {
+      if (this.isInitialized) return;
+      this.config = { ...this.config, ...config };
+      this.isInitialized = true;
 
-    // #4 Consolidated observers: FCP and CLS are global (lifetime), LCP/FID/INP are per-navigation
-    this.collectFCP();
-    this.collectCLS();
-    this.resetWebVitalsObservers();
+      this.collectFCP();
+      this.collectCLS();
+      this.resetWebVitalsObservers();
 
-    // Setup error capture (geolocation wrapping is scoped and safe)
-    this.setupGeolocationErrorHandling();
-    // #3 Removed: setupFunctionBindingErrorHandling() — overriding Function.prototype.bind is dangerous
-    this.setupConsoleErrorCapture();
-    // #6 Removed: setupZoneErrorCapture() — Zone.current.fork() without running code in it doesn't intercept Angular zone errors
+      this.setupGeolocationErrorHandling();
+      this.setupConsoleErrorCapture();
 
-    // Long Task Observer
-    if ('PerformanceObserver' in window && 'PerformanceLongTaskTiming' in window) {
-      (window as any).__apmLongTasks = [];
-      try {
-        const longTaskObserver = new PerformanceObserver((list) => {
-          const entries = list.getEntries();
-          (window as any).__apmLongTasks = (window as any).__apmLongTasks.concat(entries.map(e => ({
-            name: e.name,
-            entryType: e.entryType,
-            startTime: e.startTime,
-            duration: e.duration
-          })));
-        });
-        longTaskObserver.observe({ entryTypes: ['longtask'] });
-      } catch (e) {
-        // ignore
+      if ('PerformanceObserver' in window && 'PerformanceLongTaskTiming' in window) {
+        (window as any).__apmLongTasks = [];
+        try {
+          const longTaskObserver = new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            (window as any).__apmLongTasks = (window as any).__apmLongTasks.concat(entries.map(e => ({
+              name: e.name,
+              entryType: e.entryType,
+              startTime: e.startTime,
+              duration: e.duration
+            })));
+          });
+          longTaskObserver.observe({ entryTypes: ['longtask'] });
+        } catch (e) { /* ignore */ }
       }
-    }
 
-    if (this.config.active) {
-      this.setupGlobalErrorHandling();
-      this.setupPerformanceObservers();
-      this.startPageLoadTransaction();
+      if (this.config.active) {
+        this.setupGlobalErrorHandling();
+        this.setupPerformanceObservers();
+        this.startPageLoadTransaction();
+        this.startFlushTimer();
 
-      // #1 Batching: start flush timer
-      this.startFlushTimer();
+        if (typeof window !== 'undefined') {
+          window.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') this.flushBuffer();
+          });
+          window.addEventListener('beforeunload', () => this.flushBuffer());
 
-      // #1 Batching: flush on page unload
-      if (typeof window !== 'undefined') {
-        window.addEventListener('visibilitychange', () => {
-          if (document.visibilityState === 'hidden') {
-            this.flushBuffer();
+          // GR-9408: listen for online event to flush offline queue
+          if (this.config.enableOfflineQueue !== false) {
+            window.addEventListener('online', () => this.scheduleOfflineQueueFlush());
+            // Attempt initial flush if we're online and have queued logs
+            if (navigator.onLine) this.scheduleOfflineQueueFlush();
           }
-        });
-        window.addEventListener('beforeunload', () => {
-          this.flushBuffer();
-        });
+        }
       }
-    }
 
-    // #2 Memory: periodically clear resource timings to prevent browser memory growth
-    if ('performance' in window && 'clearResourceTimings' in performance) {
-      setInterval(() => {
-        performance.clearResourceTimings();
-      }, 60000); // Clear every 60 seconds
+      if ('performance' in window && 'clearResourceTimings' in performance) {
+        setInterval(() => performance.clearResourceTimings(), 60000);
+      }
+
+      // GR-9408: fire cold start log if applicable (after init completes)
+      this.reportColdStartIfNeeded();
+    } catch {
+      /* Never let APM init crash the app */
     }
+  }
+
+  // ====================================================================
+  // GR-9408: Cold start detection
+  // ====================================================================
+
+  private detectColdStart(): void {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return;
+      // Flag is cleared on page unload; if missing, this is a cold start
+      const flag = window.localStorage.getItem(LS_COLD_START_FLAG);
+      this.isColdStartSession = !flag;
+      if (this.isColdStartSession) {
+        window.localStorage.setItem(LS_COLD_START_FLAG, '1');
+        // Clear the flag on unload so next launch is detected as cold start
+        if (typeof window.addEventListener === 'function') {
+          window.addEventListener('beforeunload', () => {
+            try { window.localStorage.removeItem(LS_COLD_START_FLAG); } catch { /* ignore */ }
+          });
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  private reportColdStartIfNeeded(): void {
+    if (!this.isColdStartSession || this.coldStartReported) return;
+    // Only track on mobile apps
+    const isMobile = this.deviceDetector?.isMobile() ?? false;
+    if (!isMobile) return;
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+    this.coldStartTimeMs = Math.max(0, now - this.sessionStartPerfNow);
+    this.coldStartReported = true;
+    this.logPerformanceData('APP_COLD_START', {
+      AppColdStartTimeMs: this.coldStartTimeMs,
+      IsColdStart: true
+    });
+  }
+
+  /** Public API: manually report cold start time (if app has a more precise measure from native) */
+  public trackColdStart(coldStartMs: number): void {
+    if (this.coldStartReported) return;
+    this.coldStartTimeMs = coldStartMs;
+    this.coldStartReported = true;
+    this.logPerformanceData('APP_COLD_START', {
+      AppColdStartTimeMs: coldStartMs,
+      IsColdStart: true
+    });
+  }
+
+  // ====================================================================
+  // GR-9408: Capacitor plugin call tracking
+  // ====================================================================
+
+  /** Call this from your Capacitor adapter wrapper to log plugin call timing. */
+  public trackCapacitorPluginCall(pluginName: string, method: string, durationMs: number, success: boolean): void {
+    this.logPerformanceData('CAPACITOR_PLUGIN_CALL', {
+      PluginName: pluginName,
+      PluginMethod: method,
+      PluginDurationMs: durationMs,
+      PluginSuccess: success
+    });
+  }
+
+  // ====================================================================
+  // GR-9408: Breadcrumbs
+  // ====================================================================
+
+  /** Public API: add a custom breadcrumb (e.g., UI click, business action) */
+  public addBreadcrumb(category: Breadcrumb['category'], message: string, data?: Record<string, any>): void {
+    if (this.config.enableBreadcrumbs === false) return;
+    const max = this.config.breadcrumbMaxEntries ?? 20;
+    this.breadcrumbs.push({ timestamp: Date.now(), category, message, data });
+    if (this.breadcrumbs.length > max) {
+      this.breadcrumbs = this.breadcrumbs.slice(-max);
+    }
+  }
+
+  /** Internal: serialize breadcrumbs for error logs */
+  private serializeBreadcrumbs(): string | null {
+    if (!this.breadcrumbs.length) return null;
+    try { return JSON.stringify(this.breadcrumbs); } catch { return null; }
+  }
+
+  // ====================================================================
+  // GR-9408: Error fingerprinting
+  // ====================================================================
+
+  /** Generate a deterministic fingerprint for error grouping. Strips line numbers, URLs, IDs. */
+  private computeErrorFingerprint(errorType: string | undefined, errorMessage: string | undefined): string {
+    const type = errorType ?? 'Unknown';
+    const msg = errorMessage ?? '';
+    // Normalize: strip line:column numbers, URLs, hex hashes, UUIDs, and digits
+    const normalized = msg
+      .replace(/:\d+:\d+/g, ':L:C')
+      .replace(/https?:\/\/[^\s)]+/g, '<url>')
+      .replace(/\b[0-9a-f]{32,}\b/gi, '<hash>')
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<uuid>')
+      .replace(/\d{4,}/g, '<n>');
+    // Simple DJB2-ish hash for client-side fingerprint
+    const source = `${type}|${normalized.substring(0, 500)}`;
+    let hash = 5381;
+    for (let i = 0; i < source.length; i++) {
+      hash = ((hash << 5) + hash) ^ source.charCodeAt(i);
+      hash = hash >>> 0; // keep as uint32
+    }
+    return `${type}:${hash.toString(16)}`;
+  }
+
+  // ====================================================================
+  // GR-9408: Battery & Storage refresh
+  // ====================================================================
+
+  private async refreshBatteryStorage(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastBatteryStorageRefresh < this.BATTERY_STORAGE_REFRESH_INTERVAL) return;
+    this.lastBatteryStorageRefresh = now;
+    try {
+      if (this.deviceDetector?.getBatteryInfo) {
+        this.cachedBatteryInfo = await this.deviceDetector.getBatteryInfo();
+      }
+    } catch { this.cachedBatteryInfo = null; }
+    try {
+      if (this.deviceDetector?.getStorageInfo) {
+        this.cachedStorageInfo = await this.deviceDetector.getStorageInfo();
+      }
+    } catch { this.cachedStorageInfo = null; }
+  }
+
+  // ====================================================================
+  // GR-9408: Offline queue
+  // ====================================================================
+
+  private loadOfflineQueue(): OfflineQueueEntry[] {
+    try {
+      const raw = window.localStorage.getItem(LS_OFFLINE_QUEUE);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  }
+
+  private saveOfflineQueue(queue: OfflineQueueEntry[]): void {
+    try {
+      const max = this.config.offlineQueueMaxSize ?? 1000;
+      const trimmed = queue.length > max ? queue.slice(-max) : queue;
+      window.localStorage.setItem(LS_OFFLINE_QUEUE, JSON.stringify(trimmed));
+    } catch { /* quota or serialization issue — drop silently */ }
+  }
+
+  private enqueueOffline(logType: string, data: Record<string, unknown>): void {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    const queue = this.loadOfflineQueue();
+    queue.push({ logType, data, queuedAtMs: Date.now() });
+    this.saveOfflineQueue(queue);
+  }
+
+  private scheduleOfflineQueueFlush(): void {
+    if (this.offlineFlushScheduled) return;
+    this.offlineFlushScheduled = true;
+    setTimeout(() => {
+      this.offlineFlushScheduled = false;
+      this.flushOfflineQueue();
+    }, 500);
+  }
+
+  private flushOfflineQueue(): void {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    const queue = this.loadOfflineQueue();
+    if (!queue.length) return;
+    const now = Date.now();
+    // Mark each entry with offline metadata and push into regular buffer
+    for (const entry of queue) {
+      const queueDurationMs = now - entry.queuedAtMs;
+      const enriched = {
+        ...entry.data,
+        WasQueuedOffline: true,
+        OfflineQueueDurationMs: queueDurationMs
+      };
+      this.logBuffer.push(enriched);
+    }
+    this.saveOfflineQueue([]);
+    this.flushBuffer();
   }
 
   /**
@@ -1050,8 +1266,14 @@ export class MonitoringService {
   private flushBuffer(): void {
     if (this.logBuffer.length === 0) return;
 
-    // #7 Offline support: skip sending if offline
+    // GR-9408: if offline, move buffer to offline queue instead of dropping
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      if (this.config.enableOfflineQueue !== false) {
+        const batch = this.logBuffer.splice(0);
+        for (const log of batch) {
+          this.enqueueOffline(String(log['LogType'] ?? 'unknown'), log);
+        }
+      }
       return;
     }
 
@@ -1301,7 +1523,30 @@ export class MonitoringService {
       NetworkEffectiveType: effectiveType,
       NetworkDownlinkSpeed: downlink,
       NetworkRTT: rtt,
-      NetworkSaveData: saveData
+      NetworkSaveData: saveData,
+      // GR-9408: new fields
+      ReleaseVersion: this.config.releaseVersion ?? null,
+      // Battery & storage (mobile only, cached with periodic refresh)
+      BatteryLevel: this.cachedBatteryInfo?.level ?? null,
+      IsCharging: this.cachedBatteryInfo?.isCharging ?? null,
+      FreeDiskSpaceMB: this.cachedStorageInfo?.freeMB ?? null,
+      TotalDiskSpaceMB: this.cachedStorageInfo?.totalMB ?? null,
+      // Cold start flag (true only on the very first log of a cold-started session)
+      IsColdStart: (logType === 'APP_COLD_START') || (context.IsColdStart === true) || null,
+      AppColdStartTimeMs: context.AppColdStartTimeMs ?? null,
+      // Plugin call fields (populated only for CAPACITOR_PLUGIN_CALL logs)
+      PluginName: context.PluginName ?? null,
+      PluginMethod: context.PluginMethod ?? null,
+      PluginDurationMs: context.PluginDurationMs ?? null,
+      PluginSuccess: context.PluginSuccess ?? null,
+      // Breadcrumbs: only attached to error logs
+      Breadcrumbs: logType === 'UIError' ? this.serializeBreadcrumbs() : null,
+      // Error fingerprint: computed for error logs
+      ErrorFingerprint: logType === 'UIError'
+        ? this.computeErrorFingerprint(context.ErrorType ?? errorType, context.ErrorMessage ?? errorMessage)
+        : null
+      // NOTE: WasQueuedOffline and OfflineQueueDurationMs are added by flushOfflineQueue() when flushing,
+      // so we don't set them here (they're null by default for online-sent logs)
     };
   }
 
@@ -1325,22 +1570,16 @@ export class MonitoringService {
 
   async logPerformanceData(logType: string, logObj: any) {
     try {
-      // #5 Sampling: check if current transaction is sampled
-      if (this.currentTransaction && !this.currentTransaction.sampled) {
-        return;
-      }
-
-      // #7 Offline support: skip if offline
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        return;
-      }
+      // GR-9408: refresh battery/storage info (throttled to 30s) before building log
+      this.refreshBatteryStorage();
 
       const standardizedLog = await this.buildApmLogObject(logType, logObj);
       if (logObj && typeof logObj.TotalPageLoadTimeMs === 'number') {
         standardizedLog.TotalPageLoadTimeMs = logObj.TotalPageLoadTimeMs;
       }
 
-      // #1 Batching: add to buffer instead of sending immediately
+      // #1 Batching: add to buffer (flushed every flushInterval or at bufferSize)
+      // GR-9408: even if offline, we add to buffer — flushBuffer() will route to offline queue
       this.addToBuffer(standardizedLog);
     } catch {
       /* Never let APM logging block or crash the application */

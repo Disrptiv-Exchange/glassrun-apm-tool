@@ -104,6 +104,13 @@ export class RouteMonitoringService {
       }
     );
 
+    // GR-9408: record navigation breadcrumb
+    try {
+      this.monitoringService.addBreadcrumb('navigation', `Navigate to ${event.url}`, {
+        trigger: event.navigationTrigger,
+        id: event.id
+      });
+    } catch { /* ignore */ }
   }
 
   private handleNavigationEnd(current: NavigationEnd, previousUrl?: string | null): void {
