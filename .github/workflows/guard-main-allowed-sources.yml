@@ -1,0 +1,33 @@
+name: Guard MAIN allowed sources
+
+on:
+  pull_request:
+    branches: [ "main" ]   # runs only when PR targets main
+
+jobs:
+  allow-only-qa-or-hotfix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Validate source branch for main
+        shell: bash
+        run: |
+          SRC="${{ github.head_ref }}"
+          echo "Source branch: $SRC"
+
+          # Allowed path: qa -> main
+          if [[ "$SRC" == "qa" ]]; then
+            echo "✅ Allowed: qa → main"
+            exit 0
+          fi
+
+          # Allowed path: hotfix -> main (e.g., GR-6790-hotfix)
+          if [[ "$SRC" =~ ^GR-[0-9]+-hotfix$ ]]; then
+            echo "✅ Allowed: hotfix '${SRC}' → main"
+            exit 0
+          fi
+
+          echo "::error title=Blocked merge into main::Only 'qa' or JIRA hotfix branches (e.g., GR-6790-hotfix) may be merged into 'main'. Got '${SRC}'."
+          exit 1
