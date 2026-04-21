@@ -1,0 +1,41 @@
+name: Draft/Publish Main Release Notes
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    types: [closed, labeled, unlabeled]
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  update-main-draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Main draft release notes
+        id: draft
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          publish: false
+          prerelease: false
+          commitish: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional: auto-publish a release on every push to main
+      - name: Publish release
+        if: always()
+        run: |
+          # publish the most recent draft as a full release
+          gh release create "$(jq -r '.tag_name' <<<'${{ steps.draft.outputs.release }}')" \
+            --title "$(jq -r '.name' <<<'${{ steps.draft.outputs.release }}')" \
+            --notes "$(jq -r '.body' <<<'${{ steps.draft.outputs.release }}')" \
+            --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
