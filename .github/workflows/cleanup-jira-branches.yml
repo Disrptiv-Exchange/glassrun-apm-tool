@@ -1,0 +1,114 @@
+name: Cleanup merged Jira branches
+
+on:
+  schedule:
+    # Run at 01:00 UTC on weekdays (Mon–Fri)
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch: {} # so you can run it manually from the Actions tab
+
+permissions:
+  contents: write    # required to delete branches
+  pull-requests: read
+
+jobs:
+  delete-merged-branches:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (not strictly needed but harmless)
+        uses: actions/checkout@v4
+
+      - name: Delete merged Jira branches older than 5 working days
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // CONFIGURATION
+            const BASE_BRANCH = "dev";
+            const BRANCH_REGEX = /^GR-\d+$/;   // GR-XXXX where XXXX is numbers
+            const BUSINESS_DAYS_AGE = 5;
+
+            // Helper: subtract N business days from a date
+            function subtractBusinessDays(fromDate, businessDays) {
+              const date = new Date(fromDate);
+              let daysRemaining = businessDays;
+              while (daysRemaining > 0) {
+                date.setDate(date.getDate() - 1);
+                const day = date.getDay(); // 0 = Sun, 6 = Sat
+                if (day !== 0 && day !== 6) {
+                  daysRemaining--;
+                }
+              }
+              return date;
+            }
+
+            // Helper: check if mergeDate is strictly before "now - businessDays"
+            function isOlderThanBusinessDays(mergeDateString, businessDays) {
+              const mergeDate = new Date(mergeDateString);
+              const threshold = subtractBusinessDays(new Date(), businessDays);
+              return mergeDate < threshold;
+            }
+
+            console.log(`Fetching closed PRs targeting base branch "${BASE_BRANCH}"...`);
+
+            const prs = await github.paginate(
+              github.rest.pulls.list,
+              {
+                owner,
+                repo,
+                state: "closed",
+                base: BASE_BRANCH,
+                per_page: 100,
+              }
+            );
+
+            console.log(`Total closed PRs found for base=${BASE_BRANCH}: ${prs.length}`);
+
+            // Filter merged PRs whose head.ref matches GR-XXXX and older than N business days
+            const candidates = prs.filter(pr => {
+              if (!pr.merged_at) return false;
+
+              const branchName = pr.head && pr.head.ref ? pr.head.ref : "";
+              if (!BRANCH_REGEX.test(branchName)) return false;
+
+              if (!isOlderThanBusinessDays(pr.merged_at, BUSINESS_DAYS_AGE)) return false;
+
+              return true;
+            });
+
+            console.log(`Candidates for deletion (merged > ${BUSINESS_DAYS_AGE} business days ago): ${candidates.length}`);
+
+            for (const pr of candidates) {
+              const branchName = pr.head.ref;
+              const ref = `heads/${branchName}`;
+
+              try {
+                // Check if branch still exists
+                await github.rest.git.getRef({
+                  owner,
+                  repo,
+                  ref,
+                });
+
+                console.log(`Deleting branch: ${branchName} (PR #${pr.number}, merged at ${pr.merged_at})`);
+
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref,
+                });
+
+                console.log(`Deleted branch: ${branchName}`);
+              } catch (error) {
+                if (error.status === 404) {
+                  console.log(`Branch ${branchName} not found (already deleted?). Skipping.`);
+                } else {
+                  console.warn(`Failed to delete branch ${branchName}: ${error.message}`);
+                }
+              }
+            }
+
+            console.log("Cleanup job completed.");

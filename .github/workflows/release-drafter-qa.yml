@@ -1,0 +1,29 @@
+name: Draft QA Release Notes
+on:
+  push:
+    branches: [ qa ]
+  pull_request:
+    types: [closed, labeled, unlabeled]
+    branches: [ qa ]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  update-qa-draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update QA draft release notes
+        uses: release-drafter/release-drafter@v6
+        with:
+          # keep a separate draft per branch
+          config-name: release-drafter.yml
+          publish: false
+          prerelease: true
+          # identify the target branch for notes
+          commitish: qa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

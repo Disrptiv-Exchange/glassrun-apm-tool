@@ -1,0 +1,154 @@
+name: Build and Push Frontend to OCIR
+
+on:
+  # Trigger on push to qa branch
+  push:
+    branches:
+      - qa
+    paths-ignore:
+      - 'k8s_qa/**/.argocd-source-*.yaml'
+      - 'k8s/**/.argocd-source-*.yaml'
+      - '.argocd-source-*.yaml'
+  
+  # Allow manual trigger with branch selection
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'qa'
+        type: choice
+        options:
+          - dev
+          - qa
+          - demo
+          - prod
+
+env:
+  OCIR_REGISTRY: ap-mumbai-1.ocir.io
+  OCIR_NAMESPACE: bmuiha38yulz
+  OCIR_REPOSITORY: glassrun-frontend-qa
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64
+      
+      - name: Generate build metadata
+        id: meta
+        run: |
+          # Generate build number from run number
+          BUILD_NUMBER="${{ github.run_number }}"
+          
+          # Get short commit SHA
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          
+          # Get branch name
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH="${{ github.event.inputs.branch }}"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+          fi
+          
+          # Generate timestamp
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          
+          # Create tags
+          # Format: build-<number>-<branch>-<sha>-<timestamp>
+          IMAGE_TAG="build-${BUILD_NUMBER}-${BRANCH}-${SHORT_SHA}-${TIMESTAMP}"
+          
+          echo "build_number=${BUILD_NUMBER}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          
+          # Full image name
+          FULL_IMAGE="${{ env.OCIR_REGISTRY }}/${{ env.OCIR_NAMESPACE }}/${{ env.OCIR_REPOSITORY }}"
+          echo "full_image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "📦 Build Metadata:"
+          echo "  Build Number: ${BUILD_NUMBER}"
+          echo "  Branch: ${BRANCH}"
+          echo "  Commit SHA: ${SHORT_SHA}"
+          echo "  Timestamp: ${TIMESTAMP}"
+          echo "  Image Tag: ${IMAGE_TAG}"
+          echo "  Full Image: ${FULL_IMAGE}:${IMAGE_TAG}"
+      
+      - name: Login to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.OCIR_REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.full_image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_NUMBER=${{ steps.meta.outputs.build_number }}
+            GIT_COMMIT=${{ steps.meta.outputs.short_sha }}
+            BUILD_DATE=${{ steps.meta.outputs.timestamp }}
+      
+      - name: Generate build summary
+        run: |
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## 🚀 Frontend Build Successful
+          
+          ### Build Information
+          | Property | Value |
+          |----------|-------|
+          | **Build Number** | \`${{ steps.meta.outputs.build_number }}\` |
+          | **Branch** | \`${{ steps.meta.outputs.branch }}\` |
+          | **Commit SHA** | \`${{ steps.meta.outputs.short_sha }}\` |
+          | **Timestamp** | \`${{ steps.meta.outputs.timestamp }}\` |
+          | **Image Tag** | \`${{ steps.meta.outputs.image_tag }}\` |
+          
+          ### Docker Image
+          \`\`\`
+          ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}
+          ${{ steps.meta.outputs.full_image }}:latest
+          \`\`\`
+          
+          ### Platform
+          - linux/arm64
+          
+          ### Next Steps
+          - ArgoCD will automatically detect the new \`latest\` tag and deploy it
+          - To deploy a specific build, update the image tag in ArgoCD to: \`${{ steps.meta.outputs.image_tag }}\`
+          
+          ---
+          *Workflow run: ${{ github.run_id }}*
+          EOF
+      
+      - name: Post build notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ Build completed successfully!"
+            echo "📦 Image: ${{ steps.meta.outputs.full_image }}:${{ steps.meta.outputs.image_tag }}"
+            echo "🏷️  Latest: ${{ steps.meta.outputs.full_image }}:latest"
+          else
+            echo "❌ Build failed!"
+          fi

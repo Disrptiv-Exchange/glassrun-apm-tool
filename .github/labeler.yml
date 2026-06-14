@@ -1,0 +1,12 @@
+feature:
+  - 'src/**'
+  - 'apps/**'
+bug:
+  - any: ['fix/**', 'hotfix/**']
+chore:
+  - 'scripts/**'
+  - 'Dockerfile'
+deps:
+  - 'package.json'
+  - 'package-lock.json'
+  - 'pom.xml'
