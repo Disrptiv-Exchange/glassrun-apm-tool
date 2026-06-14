@@ -1,5 +1,5 @@
 /*
- * Public API Surface of @glassrun/apm-tool
+ * Public API Surface of @disrptiv-exchange/apm-tool
  */
 
 // Interfaces (type-only exports)

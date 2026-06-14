@@ -1,0 +1,15 @@
+# Consumer-side .npmrc — put this in the ROOT of any project that wants to install
+# @disrptiv-exchange/apm-tool from GitHub Packages.
+#
+# 1. Copy this file to your project as `.npmrc`.
+# 2. Create a GitHub personal access token (classic) at
+#    https://github.com/settings/tokens with the `read:packages` scope.
+# 3. Export it as GITHUB_TOKEN before running npm install:
+#       export GITHUB_TOKEN=ghp_xxx
+#       npm install @disrptiv-exchange/apm-tool
+#    Or for CI: set GITHUB_TOKEN as a repo secret and reference it the same way.
+#
+# Keep your real .npmrc out of git — gitignore it if it contains a hard-coded token.
+
+@disrptiv-exchange:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}

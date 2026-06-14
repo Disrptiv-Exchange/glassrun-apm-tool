@@ -1,4 +1,4 @@
-# @glassrun/apm-tool — Setup, Publish & Install Guide
+# @disrptiv-exchange/apm-tool — Setup, Publish & Install Guide
 
 This guide covers how to set up the GitHub repository, publish the library to GitHub Packages, and install/update it in consuming projects (glassrun-frontend, glassrun-delivery-app, glassrun-yard-app, etc.).
 
@@ -30,22 +30,24 @@ This guide covers how to set up the GitHub repository, publish the library to Gi
 
 ---
 
-## 2. Create GitHub Repository
+## 2. GitHub Repository
+
+The repository already exists and is **public**: [Disrptiv-Exchange/glassrun-apm-tool](https://github.com/Disrptiv-Exchange/glassrun-apm-tool) (branches `main`, `dev`, `qa`). The library code is already pushed. The instructions below are kept for reference if the repo ever needs to be recreated.
 
 ### Option A: Using GitHub Web UI
 
 1. Go to https://github.com/organizations/Disrptiv-Exchange/repositories/new
 2. Fill in the details:
-   - **Repository name**: `glassrun-apm`
+   - **Repository name**: `glassrun-apm-tool`
    - **Description**: `Application Performance Monitoring library for glassRUN Angular apps`
-   - **Visibility**: Private
+   - **Visibility**: Public
    - **Do NOT** initialize with README, .gitignore, or license (we already have code)
 3. Click **Create repository**
 
 ### Option B: Using GitHub CLI (if installed)
 
 ```bash
-gh repo create Disrptiv-Exchange/glassrun-apm --private --description "APM library for glassRUN Angular apps"
+gh repo create Disrptiv-Exchange/glassrun-apm-tool --public --description "APM library for glassRUN Angular apps"
 ```
 
 ---
@@ -64,13 +66,13 @@ git init
 git add .
 
 # Create the first commit
-git commit -m "initial commit: @glassrun/apm-tool library"
+git commit -m "initial commit: @disrptiv-exchange/apm-tool library"
 
 # Set the main branch name
 git branch -M main
 
 # Add the remote (replace with your actual repo URL)
-git remote add origin https://github.com/Disrptiv-Exchange/glassrun-apm.git
+git remote add origin https://github.com/Disrptiv-Exchange/glassrun-apm-tool.git
 
 # Push to GitHub
 git push -u origin main
@@ -114,14 +116,14 @@ Edit `D:\glassRUN_SaaS_Git\glassrun-apm\projects\apm-tool\package.json` and add 
 
 ```json
 {
-  "name": "@glassrun/apm-tool",
+  "name": "@disrptiv-exchange/apm-tool",
   "version": "1.0.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Disrptiv-Exchange/glassrun-apm.git"
+    "url": "https://github.com/Disrptiv-Exchange/glassrun-apm-tool.git"
   },
   "publishConfig": {
-    "@glassrun:registry": "https://npm.pkg.github.com"
+    "@disrptiv-exchange:registry": "https://npm.pkg.github.com"
   },
   "peerDependencies": {
     "@angular/common": "^20.0.0",
@@ -146,14 +148,16 @@ Edit `D:\glassRUN_SaaS_Git\glassrun-apm\projects\apm-tool\package.json` and add 
 Create file `D:\glassRUN_SaaS_Git\glassrun-apm\.npmrc`:
 
 ```
-@glassrun:registry=https://npm.pkg.github.com
+@disrptiv-exchange:registry=https://npm.pkg.github.com
 ```
 
-This tells npm that any package under `@glassrun/` scope should be published to GitHub Packages.
+This tells npm that any package under `@disrptiv-exchange/` scope should be published to GitHub Packages.
 
 ---
 
 ## 6. Build & Publish the Library
+
+> **Preferred path — automated.** Publishing is wired through GitHub Actions ([`.github/workflows/publish.yml`](.github/workflows/publish.yml)), exactly like glassGRID. Bump the version in `projects/apm-tool/package.json`, then push a `v*` tag (e.g. `git tag v1.0.1 && git push origin v1.0.1`). The workflow builds and publishes to GitHub Packages using the Actions-provided `GITHUB_TOKEN` — no personal token or `write:packages` scope required. You can also run it from the **Actions** tab. The steps below are the **manual fallback** (needs a PAT with `write:packages`).
 
 Run these commands in order:
 
@@ -173,14 +177,14 @@ npm publish
 **Expected output:**
 
 ```
-+ @glassrun/apm-tool@1.0.0
++ @disrptiv-exchange/apm-tool@1.0.0
 ```
 
 ### Verify the package is published
 
 Go to: https://github.com/orgs/Disrptiv-Exchange/packages
 
-You should see `@glassrun/apm-tool` listed there.
+You should see `@disrptiv-exchange/apm-tool` listed there.
 
 ---
 
@@ -193,17 +197,17 @@ This step is done **once per project** that wants to use the library.
 For example, in `D:\glassRUN_SaaS_Git\glassrun-frontend\.npmrc`, add:
 
 ```
-@glassrun:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${NPM_TOKEN}
+@disrptiv-exchange:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
 **For local development**, the token is already set in your user-level `.npmrc` (from Step 4), so this file just needs the registry line:
 
 ```
-@glassrun:registry=https://npm.pkg.github.com
+@disrptiv-exchange:registry=https://npm.pkg.github.com
 ```
 
-**For CI/CD**, set the `NPM_TOKEN` environment variable in your CI pipeline with the GitHub token value.
+**For CI/CD**, set the `GITHUB_TOKEN` environment variable in your CI pipeline with the GitHub token value.
 
 ### Repeat for each consuming app:
 - `glassrun-frontend/.npmrc`
@@ -218,22 +222,22 @@ For example, in `D:\glassRUN_SaaS_Git\glassrun-frontend\.npmrc`, add:
 cd D:\glassRUN_SaaS_Git\glassrun-frontend
 
 # Install specific version
-npm install @glassrun/apm-tool@1.0.0
+npm install @disrptiv-exchange/apm-tool@1.0.0
 
 # OR install latest
-npm install @glassrun/apm-tool@latest
+npm install @disrptiv-exchange/apm-tool@latest
 ```
 
 This will:
 - Download the package from GitHub Packages
 - Add it to `package.json` under `dependencies`
-- Install it in `node_modules/@glassrun/apm-tool/`
+- Install it in `node_modules/@disrptiv-exchange/apm-tool/`
 
 **Note:** If you previously used `npm link`, remove it first:
 
 ```bash
-npm unlink @glassrun/apm-tool
-npm install @glassrun/apm-tool@1.0.0
+npm unlink @disrptiv-exchange/apm-tool
+npm install @disrptiv-exchange/apm-tool@1.0.0
 ```
 
 ---
@@ -294,10 +298,10 @@ After publishing a new version, update each consuming app:
 cd D:\glassRUN_SaaS_Git\glassrun-frontend
 
 # Update to a specific version
-npm install @glassrun/apm-tool@1.0.1
+npm install @disrptiv-exchange/apm-tool@1.0.1
 
 # OR update to latest
-npm install @glassrun/apm-tool@latest
+npm install @disrptiv-exchange/apm-tool@latest
 ```
 
 Then **restart the dev server** if it was running:
@@ -310,14 +314,14 @@ npm run start
 ### Verify the version installed
 
 ```bash
-npm ls @glassrun/apm-tool
+npm ls @disrptiv-exchange/apm-tool
 ```
 
 Expected output:
 
 ```
 glassRUNCustomerAPP@x.x.x
-└── @glassrun/apm-tool@1.0.1
+└── @disrptiv-exchange/apm-tool@1.0.1
 ```
 
 ---
@@ -345,19 +349,19 @@ git add . && git commit -m "release: vX.X.X" && git push origin main
 ### Install latest in any consuming app
 
 ```bash
-npm install @glassrun/apm-tool@latest
+npm install @disrptiv-exchange/apm-tool@latest
 ```
 
 ### Check what version is installed
 
 ```bash
-npm ls @glassrun/apm-tool
+npm ls @disrptiv-exchange/apm-tool
 ```
 
 ### Check what versions are published
 
 ```bash
-npm view @glassrun/apm-tool versions --registry=https://npm.pkg.github.com
+npm view @disrptiv-exchange/apm-tool versions --registry=https://npm.pkg.github.com
 ```
 
 ---
@@ -380,7 +384,7 @@ npm view @glassrun/apm-tool versions --registry=https://npm.pkg.github.com
 
 - Ensure `.npmrc` exists in the consuming app root with:
   ```
-  @glassrun:registry=https://npm.pkg.github.com
+  @disrptiv-exchange:registry=https://npm.pkg.github.com
   ```
 - Ensure the package has been published at least once.
 
@@ -391,7 +395,7 @@ npm view @glassrun/apm-tool versions --registry=https://npm.pkg.github.com
 
 ### Library changes not reflecting after install
 
-- Verify the correct version is installed: `npm ls @glassrun/apm-tool`
+- Verify the correct version is installed: `npm ls @disrptiv-exchange/apm-tool`
 - Delete `node_modules` and reinstall:
   ```bash
   rm -rf node_modules
@@ -402,6 +406,6 @@ npm view @glassrun/apm-tool versions --registry=https://npm.pkg.github.com
 ### Switching from `npm link` to published package
 
 ```bash
-npm unlink @glassrun/apm-tool
-npm install @glassrun/apm-tool@latest
+npm unlink @disrptiv-exchange/apm-tool
+npm install @disrptiv-exchange/apm-tool@latest
 ```

@@ -1,12 +1,12 @@
 {
-  "name": "@glassrun/apm-tool",
+  "name": "@disrptiv-exchange/apm-tool",
   "version": "1.0.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Disrptiv-Exchange/glassrun-apm.git"
+    "url": "https://github.com/Disrptiv-Exchange/glassrun-apm-tool.git"
   },
   "publishConfig": {
-    "@glassrun:registry": "https://npm.pkg.github.com"
+    "@disrptiv-exchange:registry": "https://npm.pkg.github.com"
   },
   "peerDependencies": {
     "@angular/common": "^20.0.0",
