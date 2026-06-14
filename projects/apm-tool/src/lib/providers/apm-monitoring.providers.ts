@@ -38,6 +38,13 @@ export interface ApmProviderOptions {
   transport: Type<ApmTransport>;
   userProvider?: Type<ApmUserProvider>;
   deviceDetector?: Type<ApmDeviceDetector>;
+  /**
+   * Opt-in: register GlobalErrorHandler as the app's ErrorHandler so unhandled
+   * UI errors are captured. Off by default. The handler resolves MonitoringService
+   * lazily (via Injector), so enabling it is safe during bootstrap (no NG0203).
+   * Note: setting this overrides any other ErrorHandler the app provides.
+   */
+  captureUnhandledErrors?: boolean;
 }
 
 /**
@@ -101,11 +108,12 @@ export function getApmProviders(options: ApmProviderOptions): Provider[] {
       multi: true
     },
 
-    // Custom Error Handler - TEMPORARILY DISABLED FOR DIAGNOSIS
-    // {
-    //   provide: ErrorHandler,
-    //   useClass: GlobalErrorHandler
-    // },
+    // Custom Error Handler — opt-in via options.captureUnhandledErrors.
+    // GlobalErrorHandler resolves MonitoringService lazily, so registering it
+    // as ErrorHandler no longer triggers NG0203 at bootstrap.
+    ...(options.captureUnhandledErrors ? [
+      { provide: ErrorHandler, useClass: GlobalErrorHandler }
+    ] : []),
 
     // App Initializer
     {
