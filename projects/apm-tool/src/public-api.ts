@@ -40,3 +40,10 @@ export { provideApmMonitoring, getApmProviders, DEFAULT_APM_CONFIG, initializeMo
 export type { ApmProviderOptions } from './lib/providers/apm-monitoring.providers';
 export { ApmMonitoringModule } from './lib/providers/apm-monitoring.module';
 export type { ApmModuleOptions } from './lib/providers/apm-monitoring.module';
+
+// -------------------------------------------------------------------------
+// Performance Dashboard (the dashboard's own PerformanceMetrics is re-exported
+// as DashboardPerformanceMetrics from ./lib/dashboard to avoid a name clash
+// with the capture-side PerformanceMetrics above).
+// -------------------------------------------------------------------------
+export * from './lib/dashboard/index';
