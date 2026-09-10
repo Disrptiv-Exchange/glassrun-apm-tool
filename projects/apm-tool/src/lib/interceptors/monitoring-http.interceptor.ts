@@ -36,6 +36,13 @@ export class MonitoringHttpInterceptor implements HttpInterceptor {
       return next.handle(request);
     }
 
+    // Collection is off - either the enablement gate said no, or stop() has run. Pass the
+    // request through untouched: the span, request id, timestamps and in-flight entry below
+    // would all be built for something that can never be flushed.
+    if (!this.monitoringService.isActive()) {
+      return next.handle(request);
+    }
+
     const requestId = this.generateRequestId();
     const startPerf = performance.now();
     this.monitoringService.incrementInFlightRequests(requestId, startPerf);
