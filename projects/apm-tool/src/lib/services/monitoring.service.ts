@@ -7,7 +7,8 @@ import { ApmConfig } from '../interfaces/apm-config.interface';
 import { ApmTransport } from '../interfaces/apm-transport.interface';
 import { ApmUserProvider } from '../interfaces/apm-user-provider.interface';
 import { ApmDeviceDetector, ApmBatteryInfo, ApmStorageInfo } from '../interfaces/apm-device-detector.interface';
-import { APM_CONFIG, APM_TRANSPORT, APM_USER_PROVIDER, APM_DEVICE_DETECTOR } from '../tokens/injection-tokens';
+import { APM_CONFIG, APM_TRANSPORT, APM_USER_PROVIDER, APM_DEVICE_DETECTOR, APM_ENABLEMENT_GATE } from '../tokens/injection-tokens';
+import { ApmEnablementGate } from '../interfaces/apm-enablement-gate.interface';
 import { generateUUID } from '../utils/uuid';
 import { tryGetCapacitorAppInfo, tryGetCapacitorDeviceInfo } from '../utils/capacitor-helpers';
 
@@ -79,6 +80,23 @@ export class MonitoringService {
   // Web Vitals — single set of observers (FCP/CLS are global, LCP/FID/INP are per-navigation)
   private webVitals: any = {};
   private observers: PerformanceObserver[] = [];
+
+  // ---- start/stop lifecycle -------------------------------------------------------------
+  /** True between start() and stop(). Every collection entry point checks it. */
+  private isCollecting = false;
+  /** Poll handle for the enablement gate; cleared once the gate gives a definite answer. */
+  private gateTimerId: any = null;
+  /** setInterval handle for the periodic clearResourceTimings() housekeeping. */
+  private resourceTimingTimerId: any = null;
+  /** The long-task observer, kept so stop() can disconnect it. */
+  private longTaskObserver: PerformanceObserver | null = null;
+  /** console.error / console.warn as they were before setupConsoleErrorCapture patched them. */
+  private originalConsoleError: ((...args: any[]) => void) | null = null;
+  private originalConsoleWarn: ((...args: any[]) => void) | null = null;
+  /** Window listeners registered by start(), kept so stop() can remove exactly these. */
+  private boundVisibilityHandler: (() => void) | null = null;
+  private boundUnloadHandler: (() => void) | null = null;
+  private boundOnlineHandler: (() => void) | null = null;
   private readonly ERROR_DEDUPLICATION_WINDOW = 5000; // 5 seconds
   private errorDeduplicationMap = new Map<string, number>();
 
@@ -280,7 +298,8 @@ export class MonitoringService {
     @Inject(APM_TRANSPORT) private transport: ApmTransport,
     @Optional() @Inject(APM_USER_PROVIDER) private userProvider: ApmUserProvider | null,
     @Optional() @Inject(APM_DEVICE_DETECTOR) private deviceDetector: ApmDeviceDetector | null,
-    @Inject(APM_CONFIG) configInput: ApmConfig
+    @Inject(APM_CONFIG) configInput: ApmConfig,
+    @Optional() @Inject(APM_ENABLEMENT_GATE) private enablementGate: ApmEnablementGate | null = null
   ) {
     this.config = { ...this.getDefaultConfig(), ...configInput };
     // GR-9408: record session start time for cold start calculation
@@ -298,6 +317,58 @@ export class MonitoringService {
       this.config = { ...this.config, ...config };
       this.isInitialized = true;
 
+      // With a gate, nothing is registered yet. The decision usually lives in data that only
+      // arrives after login, and registering here would pay the whole collection cost for an
+      // app whose APM is switched off.
+      if (this.enablementGate) {
+        this.watchEnablementGate();
+        return;
+      }
+
+      this.start();
+    } catch {
+      /* Never let APM init crash the app */
+    }
+  }
+
+  /**
+   * Poll the gate until it answers, then start or stop accordingly. A null answer means "not
+   * known yet", so polling continues; the interval is cheap next to what it is avoiding.
+   */
+  private watchEnablementGate(): void {
+    const tick = () => {
+      let verdict: boolean | null = null;
+      try {
+        verdict = this.enablementGate ? this.enablementGate.isEnabled() : true;
+      } catch {
+        verdict = null;
+      }
+
+      if (verdict === false) {
+        // Definite no: tear everything down. From here the app pays nothing at all.
+        this.stop();
+      } else {
+        // Enabled, or not known yet. Collect either way - page load, first paint and cold
+        // start only exist at startup, and the answer does not arrive until login, so waiting
+        // for it would lose them permanently for an app that turns out to be enabled. They are
+        // only buffered here; whether any of it is SENT is the transport's decision.
+        this.start();
+      }
+    };
+
+    tick();
+    if (this.gateTimerId) clearInterval(this.gateTimerId);
+    this.gateTimerId = setInterval(tick, Math.max(1000, this.config.enablementPollMs || 3000));
+  }
+
+  /**
+   * Register everything that collects. Idempotent.
+   */
+  start(): void {
+    try {
+      if (this.isCollecting) return;
+      this.isCollecting = true;
+
       this.collectFCP();
       this.collectCLS();
       this.resetWebVitalsObservers();
@@ -308,7 +379,7 @@ export class MonitoringService {
       if ('PerformanceObserver' in window && 'PerformanceLongTaskTiming' in window) {
         (window as any).__apmLongTasks = [];
         try {
-          const longTaskObserver = new PerformanceObserver((list) => {
+          const longTaskObserver = this.longTaskObserver = new PerformanceObserver((list) => {
             const entries = list.getEntries();
             (window as any).__apmLongTasks = (window as any).__apmLongTasks.concat(entries.map(e => ({
               name: e.name,
@@ -328,14 +399,19 @@ export class MonitoringService {
         this.startFlushTimer();
 
         if (typeof window !== 'undefined') {
-          window.addEventListener('visibilitychange', () => {
+          // Kept in fields rather than inline arrows so stop() can remove these exact handlers.
+          this.boundVisibilityHandler = () => {
             if (document.visibilityState === 'hidden') this.flushBuffer();
-          });
-          window.addEventListener('beforeunload', () => this.flushBuffer());
+          };
+          this.boundUnloadHandler = () => this.flushBuffer();
+          this.boundOnlineHandler = () => this.scheduleOfflineQueueFlush();
+
+          window.addEventListener('visibilitychange', this.boundVisibilityHandler);
+          window.addEventListener('beforeunload', this.boundUnloadHandler);
 
           // GR-9408: listen for online event to flush offline queue
           if (this.config.enableOfflineQueue !== false) {
-            window.addEventListener('online', () => this.scheduleOfflineQueueFlush());
+            window.addEventListener('online', this.boundOnlineHandler);
             // Attempt initial flush if we're online and have queued logs
             if (navigator.onLine) this.scheduleOfflineQueueFlush();
           }
@@ -343,14 +419,72 @@ export class MonitoringService {
       }
 
       if ('performance' in window && 'clearResourceTimings' in performance) {
-        setInterval(() => performance.clearResourceTimings(), 60000);
+        this.resourceTimingTimerId = setInterval(() => performance.clearResourceTimings(), 60000);
       }
 
-      // GR-9408: fire cold start log if applicable (after init completes)
+      // GR-9408: fire cold start log if applicable (after start completes)
       this.reportColdStartIfNeeded();
     } catch {
-      /* Never let APM init crash the app */
+      /* Never let APM start crash the app */
     }
+  }
+
+  /**
+   * Undo everything start() registered, so a disabled app pays nothing.
+   *
+   * Every step is guarded individually: a browser that never supported one of these APIs, or a
+   * handle that was never created, must not stop the rest of the teardown.
+   */
+  stop(): void {
+    try {
+      if (!this.isCollecting) return;
+      this.isCollecting = false;
+
+      // Buffered logs are dropped rather than kept - collection is off, so nothing will ever
+      // flush them and holding them would just occupy memory.
+      this.logBuffer.length = 0;
+
+      for (const observer of this.observers) {
+        try { observer.disconnect(); } catch { /* already gone */ }
+      }
+      this.observers = [];
+
+      for (const observer of [this.lcpObserver, this.fidObserver, this.inpObserver, this.longTaskObserver]) {
+        try { if (observer) observer.disconnect(); } catch { /* already gone */ }
+      }
+      this.lcpObserver = null as any;
+      this.fidObserver = null as any;
+      this.inpObserver = null as any;
+      this.longTaskObserver = null;
+
+      if (this.flushTimerId) { try { clearInterval(this.flushTimerId); } catch { /* noop */ } }
+      this.flushTimerId = null;
+
+      if (this.resourceTimingTimerId) { try { clearInterval(this.resourceTimingTimerId); } catch { /* noop */ } }
+      this.resourceTimingTimerId = null;
+
+      // Restore console only if this service was the one that patched it.
+      if (this.originalConsoleError) { try { console.error = this.originalConsoleError; } catch { /* noop */ } }
+      if (this.originalConsoleWarn) { try { console.warn = this.originalConsoleWarn; } catch { /* noop */ } }
+      this.originalConsoleError = null;
+      this.originalConsoleWarn = null;
+
+      if (typeof window !== 'undefined') {
+        try { if (this.boundVisibilityHandler) window.removeEventListener('visibilitychange', this.boundVisibilityHandler); } catch { /* noop */ }
+        try { if (this.boundUnloadHandler) window.removeEventListener('beforeunload', this.boundUnloadHandler); } catch { /* noop */ }
+        try { if (this.boundOnlineHandler) window.removeEventListener('online', this.boundOnlineHandler); } catch { /* noop */ }
+      }
+      this.boundVisibilityHandler = null;
+      this.boundUnloadHandler = null;
+      this.boundOnlineHandler = null;
+    } catch {
+      /* Never let APM teardown crash the app */
+    }
+  }
+
+  /** Whether collection is currently running. Used by the interceptor and route monitor. */
+  isActive(): boolean {
+    return this.isCollecting;
   }
 
   // ====================================================================
@@ -801,6 +935,9 @@ export class MonitoringService {
     // Store original console methods
     const originalError = console.error;
     const originalWarn = console.warn;
+    // Remembered so stop() can put the real implementations back.
+    this.originalConsoleError = originalError;
+    this.originalConsoleWarn = originalWarn;
     const self = this;
 
     // #3 Override console.error with recursion guard
@@ -1253,8 +1390,53 @@ export class MonitoringService {
   /**
    * Add a log entry to the buffer. Flush when buffer reaches bufferSize.
    */
+  /**
+   * Whether one API call is worth a row.
+   *
+   * Excluded endpoints never are. Errors and slow calls always are - those are what anyone
+   * actually looks for. Everything else is sampled, because a busy app produces far more fast
+   * successful calls than interesting ones and logging all of them buries the signal.
+   */
+  private shouldLogApiCall(logObj: any): boolean {
+    try {
+      const patterns = this.config.excludedApiPatterns || [];
+      if (patterns.length > 0) {
+        const apiUrl = String(logObj?.apiUrl || logObj?.url || '').toLowerCase();
+        if (patterns.some(p => p && apiUrl.includes(String(p).toLowerCase()))) {
+          return false;
+        }
+      }
+
+      const rate = typeof this.config.apiSampleRate === 'number' ? this.config.apiSampleRate : 1;
+      if (rate >= 1) return true;
+
+      const statusCode = Number(logObj?.apiStatusCode || logObj?.status || 0);
+      if (statusCode >= 400) return true;
+
+      const threshold = typeof this.config.slowApiThresholdMs === 'number'
+        ? this.config.slowApiThresholdMs
+        : 2000;
+      const duration = Number(logObj?.jsDurationMs || logObj?.httpDurationMs || 0);
+      if (duration >= threshold) return true;
+
+      return Math.random() < Math.max(0, rate);
+    } catch {
+      // A predicate that throws must not silently lose telemetry - keep the log.
+      return true;
+    }
+  }
+
   private addToBuffer(log: Record<string, unknown>): void {
     this.logBuffer.push(log);
+
+    // Hard cap, separate from bufferSize (which is the flush THRESHOLD, not a limit). A
+    // transport that cannot deliver for a long time would otherwise grow this without bound.
+    // Oldest go first: recent telemetry is the more useful half.
+    const cap = Math.max(this.config.maxBufferSize || 1000, this.config.bufferSize || 100);
+    if (this.logBuffer.length > cap) {
+      this.logBuffer.splice(0, this.logBuffer.length - cap);
+    }
+
     if (this.logBuffer.length >= (this.config.bufferSize || 100)) {
       this.flushBuffer();
     }
@@ -1277,7 +1459,11 @@ export class MonitoringService {
       return;
     }
 
-    const batch = this.logBuffer.splice(0);
+    // Bounded rather than draining everything: the first flush after login carries the whole
+    // pre-login backlog, and sending that as one array is what the server rejected. The rest
+    // stays buffered and goes out on the next tick.
+    const limit = Math.max(1, this.config.maxBatchSize || 10);
+    const batch = this.logBuffer.splice(0, limit);
     try {
       const accepted =
         batch.length === 1
@@ -1598,6 +1784,15 @@ export class MonitoringService {
 
   async logPerformanceData(logType: string, logObj: any) {
     try {
+      // Nothing is built while collection is off. This is the method every metric funnels
+      // through, so returning here avoids the per-event log object and the native
+      // battery/storage lookups that go with it.
+      if (!this.isCollecting) return;
+
+      // Sampling is applied BEFORE buildApmLogObject, so a call that will be discarded never
+      // pays for the async device/battery lookups or the ~70-field object.
+      if (logType === 'API_CALL' && !this.shouldLogApiCall(logObj)) return;
+
       // GR-9408: refresh battery/storage info (throttled to 30s) before building log
       this.refreshBatteryStorage();
 
