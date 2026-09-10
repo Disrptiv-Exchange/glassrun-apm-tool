@@ -1279,12 +1279,40 @@ export class MonitoringService {
 
     const batch = this.logBuffer.splice(0);
     try {
-      if (batch.length === 1) {
-        // Single log — use existing send method for backward compatibility
-        this.transport.send(batch[0]['LogType'] as string || 'unknown', batch[0]);
-      } else {
-        // Batch — use sendBatch
-        this.transport.sendBatch(batch);
+      const accepted =
+        batch.length === 1
+          // Single log — use existing send method for backward compatibility
+          ? this.transport.send(batch[0]['LogType'] as string || 'unknown', batch[0])
+          // Batch — use sendBatch
+          : this.transport.sendBatch(batch);
+
+      // Only an explicit `false` means "not sent". A transport that returns nothing keeps the
+      // original contract and is assumed to have taken the batch, so this cannot change the
+      // behaviour of an existing implementation.
+      if (accepted === false) {
+        this.requeue(batch);
+      }
+    } catch {
+      // A throwing transport did not deliver either, so the batch is kept rather than dropped.
+      this.requeue(batch);
+    }
+  }
+
+  /**
+   * Put an undelivered batch back at the FRONT of the buffer so the next flush retries it in
+   * the order the events happened.
+   *
+   * Capped, because a transport that never recovers would otherwise grow this without bound in
+   * a long-lived session. When the cap is hit the OLDEST entries are dropped: recent telemetry
+   * is the more useful of the two, and dropping silently here is still better than the previous
+   * behaviour of dropping everything on the first failure.
+   */
+  private requeue(batch: Record<string, unknown>[]): void {
+    try {
+      const cap = Math.max((this.config.bufferSize || 100) * 10, 100);
+      this.logBuffer.unshift(...batch);
+      if (this.logBuffer.length > cap) {
+        this.logBuffer.splice(0, this.logBuffer.length - cap);
       }
     } catch {
       /* Never let APM logging block or crash the application */
