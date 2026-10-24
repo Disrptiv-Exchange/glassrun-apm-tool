@@ -21,6 +21,7 @@ import {
 } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
 import { ChartDataPoint } from './apm-combo-chart.component';
+import { polylinePoints, areaPathD } from '../utils/svg-points';
 
 export interface ExtraLine {
   key: string;
@@ -255,19 +256,11 @@ export class ApmAreaChartComponent implements OnDestroy {
     }))
   );
 
-  linePath = computed(() => this.mainDots().map((d, i) => `${i === 0 ? '' : 'L '}${d.cx},${d.cy}`).join(' ').trim());
-  areaPath = computed(() => {
-    const dots = this.mainDots();
-    if (!dots.length) return '';
-    const base = this.margins.top + this.plotHeight();
-    const top = dots.map((d, i) => `${i === 0 ? 'M' : 'L'} ${d.cx},${d.cy}`).join(' ');
-    return `${top} L ${dots[dots.length - 1].cx},${base} L ${dots[0].cx},${base} Z`;
-  });
+  linePath = computed(() => polylinePoints(this.mainDots()));
+  areaPath = computed(() => areaPathD(this.mainDots(), this.margins.top + this.plotHeight()));
 
   extraLinePath(key: string): string {
-    const n = this.data().length;
-    const xFor = this.xFor();
-    return this.data().map((d, i) => `${i === 0 ? '' : 'L '}${xFor(i)},${this.yFor(Number(d[key]) || 0)}`).join(' ').trim();
+    return polylinePoints(this.extraLineDots(key));
   }
 
   extraLineDots(key: string): { index: number; cx: number; cy: number }[] {
