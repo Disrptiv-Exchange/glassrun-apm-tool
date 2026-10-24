@@ -24,6 +24,7 @@
  *   leftAxisLabel
  */
 
+import { polylinePoints, areaPathD } from '../utils/svg-points';
 import {
   Component, ChangeDetectionStrategy, ViewEncapsulation,
   ElementRef, viewChild, input, computed, effect, signal, OnDestroy, PLATFORM_ID, inject,
@@ -257,17 +258,9 @@ export class ApmLineChartComponent implements OnDestroy {
     return dots.filter((_, i) => i % step === 0 || i === dots.length - 1);
   });
 
-  linePath = computed(() =>
-    this.allDots().map((d, i) => `${i === 0 ? '' : 'L '}${d.cx},${d.cy}`).join(' ').trim()
-  );
+  linePath = computed(() => polylinePoints(this.allDots()));
 
-  areaPath = computed(() => {
-    const dots = this.allDots();
-    if (!dots.length) return '';
-    const base = this.M.top + this.plotH();
-    const top = dots.map((d, i) => `${i === 0 ? 'M' : 'L'} ${d.cx},${d.cy}`).join(' ');
-    return `${top} L ${dots[dots.length - 1].cx},${base} L ${dots[0].cx},${base} Z`;
-  });
+  areaPath = computed(() => areaPathD(this.allDots(), this.M.top + this.plotH()));
 
   trendPct = computed((): number | null => {
     const pts = this.pts();

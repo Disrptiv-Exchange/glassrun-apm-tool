@@ -24,6 +24,7 @@ import {
   OnDestroy, PLATFORM_ID, inject,
 } from '@angular/core';
 import { isPlatformBrowser, NgTemplateOutlet } from '@angular/common';
+import { polylinePoints } from '../utils/svg-points';
 
 export interface ChartDataPoint {
   [key: string]: any;
@@ -409,11 +410,7 @@ export class ApmComboChartComponent implements OnDestroy {
     });
   });
 
-  linePath = computed(() => {
-    const dots = this.lineDots();
-    if (!dots.length) return '';
-    return dots.map((d, i) => `${i === 0 ? 'M' : ''}${d.cx},${d.cy}`).join(' L ');
-  });
+  linePath = computed(() => polylinePoints(this.lineDots()));
 
   barLegendColor = computed(() => this.barColorFn()(this.leftMax() / 2, {}));
 

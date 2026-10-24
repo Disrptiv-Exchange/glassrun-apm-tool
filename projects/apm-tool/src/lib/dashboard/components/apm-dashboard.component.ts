@@ -635,6 +635,17 @@ export class ApmDashboardComponent implements OnInit, OnDestroy {
     return d ? d.toISOString().slice(0, 10) : '';
   });
 
+  constructor() {
+    // Watch filter signals → trigger metrics fetch. Created HERE, not in ngOnInit: effect() is only valid in an
+    // injection context, and lifecycle hooks run outside one — calling it from ngOnInit threw NG0203, which
+    // failed the route activation and bounced the user back to the previous page.
+    effect(() => {
+      void this.dateRange(); void this.selectedRole(); void this.selectedUsers();
+      void this.selectedPage(); void this.selectedSource();
+      if (this.isBrowser) this.metricsTrigger$.next();
+    });
+  }
+
   ngOnInit(): void {
     if (!this.isBrowser) return;
 
@@ -650,13 +661,6 @@ export class ApmDashboardComponent implements OnInit, OnDestroy {
       next: m  => { this.metrics.set(m); this.metricsLoading.set(false); this.lastUpdated.set(new Date()); },
       error: () => { this.metricsLoading.set(false); },
     });
-
-    // Watch filter signals → trigger metrics fetch
-    effect(() => {
-      void this.dateRange(); void this.selectedRole(); void this.selectedUsers();
-      void this.selectedPage(); void this.selectedSource();
-      this.metricsTrigger$.next();
-    }, { injector: undefined as any });
 
     // Roles fetch (only if host did not supply roles)
     if (!this.roles().length) {
