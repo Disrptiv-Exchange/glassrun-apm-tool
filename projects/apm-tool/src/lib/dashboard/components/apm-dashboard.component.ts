@@ -21,7 +21,7 @@ import { switchMap, debounceTime, takeUntil, startWith } from 'rxjs/operators';
 import { ApmDashboardDataProvider } from '../data/apm-dashboard-data.provider';
 import { APM_DASHBOARD_CONFIG, ApmDashboardSourceOption } from '../data/apm-dashboard.config';
 import {
-  PerformanceMetrics, DateRange, DashboardPageOption, Role, User,
+  PerformanceMetrics, DateRange, DashboardPageOption, Role, User, ThresholdConfig,
 } from '../models/apm-dashboard.models';
 
 import { ApmKpiRibbonComponent } from './apm-kpi-ribbon.component';
@@ -38,6 +38,7 @@ import { ApmMobileTabComponent } from './apm-mobile-tab.component';
 import { ApmNetworkBreakdownChartComponent } from './apm-network-breakdown-chart.component';
 import { ApmUserExperienceTabComponent } from './apm-user-experience-tab.component';
 import { ApmAppsComparisonChartComponent } from './apm-apps-comparison-chart.component';
+import { ApmAlertsPanelComponent } from './apm-alerts-panel.component';
 
 import { toLocalISOString, getEndOfDay, formatAgo } from '../utils/date-utils';
 
@@ -69,6 +70,7 @@ const PRESETS: Preset[] = [
     ApmNetworkBreakdownChartComponent,
     ApmUserExperienceTabComponent,
     ApmAppsComparisonChartComponent,
+    ApmAlertsPanelComponent,
     NgTemplateOutlet,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -265,8 +267,10 @@ const PRESETS: Preset[] = [
       </div>
     }
 
-    <!-- KPI ribbon (always visible once loaded, or skeleton) -->
-    <apm-kpi-ribbon [metrics]="metrics()" />
+    <!-- KPI ribbon (always visible once loaded, or skeleton).
+         Thresholds come from SSP_APM_GetThresholdConfig so a tile's colour and the alert
+         raised for it use the same numbers. An empty list falls back to the built-in limits. -->
+    <apm-kpi-ribbon [metrics]="metrics()" [thresholds]="thresholds()" />
 
     <!-- ===== Tabs nav ===== -->
     <div class="pd-tabs-nav" role="tablist">
@@ -325,6 +329,12 @@ const PRESETS: Preset[] = [
 
     <!-- Overview -->
     <div [class]="'pd-tab-panel' + (activeTab() === 'overview' ? ' pd-tab-panel--active' : '')">
+      <!-- Breaching metrics lead the tab: what is wrong now comes before the detail of
+           everything that is fine. Hidden entirely when no thresholds are configured, so
+           a host app without the threshold feature sees no empty card. -->
+      @if (thresholds().length > 0) {
+        <apm-alerts-panel [source]="selectedSource()" status="Active" [limit]="25" />
+      }
       <div class="pd-overview-grid">
         <apm-api-performance-chart
           [dateRange]="dateRange()"
@@ -598,6 +608,13 @@ export class ApmDashboardComponent implements OnInit, OnDestroy {
   metricsLoading = signal(true);
   rolesFromApi   = signal<Role[]>([]);
   usersFromApi   = signal<User[]>([]);
+  /**
+   * Active threshold rules. Fetched once - these change when an operator edits them, not
+   * when a filter moves, so refetching per filter change would be pure waste.
+   * Empty means the host app does not serve the threshold endpoint; the ribbon then uses
+   * its built-in limits and the alerts panel stays hidden.
+   */
+  thresholds     = signal<ThresholdConfig[]>([]);
   lastUpdated    = signal<Date | null>(null);
   freshnessLabel = signal<string>('—');
 
@@ -663,6 +680,11 @@ export class ApmDashboardComponent implements OnInit, OnDestroy {
       this.dataProvider.getRoles().pipe(takeUntil(this.destroy$))
         .subscribe({ next: r => this.rolesFromApi.set(r ?? []), error: () => {} });
     }
+
+    // Threshold rules. A host app whose provider does not implement this returns [] from the
+    // base class, so the failure mode is "no thresholds", never a broken dashboard.
+    this.dataProvider.getThresholdConfig({ companyId: 0 }).pipe(takeUntil(this.destroy$))
+      .subscribe({ next: t => this.thresholds.set(t ?? []), error: () => this.thresholds.set([]) });
 
     // Freshness label every 10 s
     interval(10_000).pipe(startWith(0), takeUntil(this.destroy$))

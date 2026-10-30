@@ -9,7 +9,9 @@ import {
   viewChild, input, computed, effect, signal, OnDestroy, PLATFORM_ID, inject,
 } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
-import { PerformanceMetrics } from '../models/apm-dashboard.models';
+import {
+  PerformanceMetrics, ThresholdConfig, THRESHOLD_METRIC_CODES,
+} from '../models/apm-dashboard.models';
 
 type Tone = 'good' | 'warn' | 'poor' | 'info' | 'neutral';
 
@@ -36,23 +38,48 @@ function fmtPct(n: number | undefined | null, d = 1): string {
   return typeof n === 'number' ? `${n.toFixed(d)}%` : '—';
 }
 
-function vitalStatus(v: number | undefined | null, good: number, ni: number): { tone: Tone; label: string } {
+/**
+ * The built-in limits, used when no threshold config is supplied.
+ *
+ * These are the values this component has always applied. Keeping them here means a host
+ * app that does not serve SSP_APM_GetThresholdConfig behaves exactly as before, and a host
+ * that does gets the same colours on day one because the seed script uses these numbers.
+ */
+const DEFAULT_LIMITS: Record<string, { warn: number; danger: number }> = {
+  [THRESHOLD_METRIC_CODES.avgPageLoad]:    { warn: 2000, danger: 4000 },
+  [THRESHOLD_METRIC_CODES.avgApiResponse]: { warn:  500, danger: 1000 },
+  [THRESHOLD_METRIC_CODES.fcp]:            { warn: 1800, danger: 3000 },
+  [THRESHOLD_METRIC_CODES.lcp]:            { warn: 2500, danger: 4000 },
+  [THRESHOLD_METRIC_CODES.inp]:            { warn:  200, danger:  500 },
+  [THRESHOLD_METRIC_CODES.errorRate]:      { warn:    1, danger:    5 },
+  [THRESHOLD_METRIC_CODES.apdex]:          { warn: 0.94, danger: 0.85 },
+  [THRESHOLD_METRIC_CODES.bounceRate]:     { warn:   40, danger:   60 },
+};
+
+/** Resolved limits for one metric, after config has been layered over the defaults. */
+interface Limits { warn: number; danger: number; direction: 'Above' | 'Below'; }
+
+function vitalStatus(v: number | undefined | null, limits: Limits): { tone: Tone; label: string } {
   if (v == null || isNaN(v)) return { tone: 'neutral', label: '—' };
-  if (v <= good) return { tone: 'good', label: 'Good' };
-  if (v <= ni)   return { tone: 'warn', label: 'Warn' };
+  if (limits.direction === 'Below') {
+    if (v <= limits.danger) return { tone: 'poor', label: 'Poor' };
+    if (v <= limits.warn)   return { tone: 'warn', label: 'Warn' };
+    return { tone: 'good', label: 'Good' };
+  }
+  if (v >= limits.danger) return { tone: 'poor', label: 'Poor' };
+  if (v >= limits.warn)   return { tone: 'warn', label: 'Warn' };
+  return { tone: 'good', label: 'Good' };
+}
+function apdexTone(v: number | undefined | null, limits: Limits): { tone: Tone; label: string } {
+  if (v == null || isNaN(v)) return { tone: 'neutral', label: '—' };
+  if (v >= limits.warn)   return { tone: 'good', label: 'Excellent' };
+  if (v >= limits.danger) return { tone: 'warn', label: 'Fair' };
   return { tone: 'poor', label: 'Poor' };
 }
-function apdexTone(v: number | undefined | null): { tone: Tone; label: string } {
-  if (v == null) return { tone: 'neutral', label: '—' };
-  if (v >= 0.94) return { tone: 'good', label: 'Excellent' };
-  if (v >= 0.85) return { tone: 'good', label: 'Good' };
-  if (v >= 0.7)  return { tone: 'warn', label: 'Fair' };
-  return { tone: 'poor', label: 'Poor' };
-}
-function bounceTone(v: number | undefined | null): { tone: Tone; label: string } {
-  if (v == null) return { tone: 'neutral', label: '—' };
-  if (v < 40) return { tone: 'good', label: 'Healthy' };
-  if (v < 60) return { tone: 'warn', label: 'Watch' };
+function bounceTone(v: number | undefined | null, limits: Limits): { tone: Tone; label: string } {
+  if (v == null || isNaN(v)) return { tone: 'neutral', label: '—' };
+  if (v < limits.warn)   return { tone: 'good', label: 'Healthy' };
+  if (v < limits.danger) return { tone: 'warn', label: 'Watch' };
   return { tone: 'poor', label: 'High' };
 }
 
@@ -119,6 +146,38 @@ function bounceTone(v: number | undefined | null): { tone: Tone; label: string }
 export class ApmKpiRibbonComponent implements OnDestroy {
   metrics = input<PerformanceMetrics | null>(null);
 
+  /**
+   * Threshold rules from SSP_APM_GetThresholdConfig. Any metric not covered here falls back
+   * to DEFAULT_LIMITS, so passing nothing (or a partial set) is always safe.
+   *
+   * This is what makes a tile's colour and the alert that fires for it come from the same
+   * numbers, instead of the UI and the evaluator drifting apart.
+   */
+  thresholds = input<ThresholdConfig[] | null>(null);
+
+  /** Global rules only; a per-page or per-endpoint rule does not apply to a global tile. */
+  private limitsByMetric = computed<Record<string, Limits>>(() => {
+    const out: Record<string, Limits> = {};
+    for (const [code, d] of Object.entries(DEFAULT_LIMITS)) {
+      out[code] = { warn: d.warn, danger: d.danger, direction: code === THRESHOLD_METRIC_CODES.apdex ? 'Below' : 'Above' };
+    }
+    for (const t of this.thresholds() ?? []) {
+      if (!t?.metricCode || t.isActive === false) continue;
+      if (t.scope && t.scope !== 'Global') continue;
+      const base = out[t.metricCode];
+      out[t.metricCode] = {
+        warn:   t.warningValue ?? base?.warn   ?? 0,
+        danger: t.dangerValue  ?? base?.danger ?? 0,
+        direction: t.direction ?? base?.direction ?? 'Above',
+      };
+    }
+    return out;
+  });
+
+  private limitsFor(metricCode: string): Limits {
+    return this.limitsByMetric()[metricCode] ?? { warn: 0, danger: 0, direction: 'Above' };
+  }
+
   readonly skeletonCount = Array(8);
 
   private isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
@@ -133,28 +192,31 @@ export class ApmKpiRibbonComponent implements OnDestroy {
     const m = this.metrics();
     if (!m) return [];
     const all: (KpiTileData | false)[] = [
-      { label: 'Avg Page Load',    icon: 'clock',    value: fmt(m.avgPageLoadTime),    status: vitalStatus(m.avgPageLoadTime, 2000, 4000) },
-      { label: 'Avg API Response', icon: 'activity', value: fmt(m.avgApiResponseTime), status: vitalStatus(m.avgApiResponseTime, 500, 1000) },
-      { label: 'FCP',              icon: 'zap',      value: fmt(m.avgFcp),             status: vitalStatus(m.avgFcp, 1800, 3000),   sub: 'First Contentful Paint' },
-      { label: 'LCP',              icon: 'maximize', value: fmt(m.avgLcp),             status: vitalStatus(m.avgLcp, 2500, 4000),   sub: 'Largest Contentful Paint' },
-      { label: 'INP',              icon: 'trending', value: fmt(m.avgInp),             status: vitalStatus(m.avgInp, 200, 500),     sub: 'Interaction to Next Paint' },
-      { label: 'Error Rate',       icon: 'alert',    value: fmtPct(m.errorRate),       status: vitalStatus(m.errorRate, 1, 5) },
+      { label: 'Avg Page Load',    icon: 'clock',    value: fmt(m.avgPageLoadTime),    status: vitalStatus(m.avgPageLoadTime,    this.limitsFor(THRESHOLD_METRIC_CODES.avgPageLoad)) },
+      { label: 'Avg API Response', icon: 'activity', value: fmt(m.avgApiResponseTime), status: vitalStatus(m.avgApiResponseTime, this.limitsFor(THRESHOLD_METRIC_CODES.avgApiResponse)) },
+      { label: 'FCP',              icon: 'zap',      value: fmt(m.avgFcp),             status: vitalStatus(m.avgFcp, this.limitsFor(THRESHOLD_METRIC_CODES.fcp)), sub: 'First Contentful Paint' },
+      { label: 'LCP',              icon: 'maximize', value: fmt(m.avgLcp),             status: vitalStatus(m.avgLcp, this.limitsFor(THRESHOLD_METRIC_CODES.lcp)), sub: 'Largest Contentful Paint' },
+      { label: 'INP',              icon: 'trending', value: fmt(m.avgInp),             status: vitalStatus(m.avgInp, this.limitsFor(THRESHOLD_METRIC_CODES.inp)), sub: 'Interaction to Next Paint' },
+      { label: 'Error Rate',       icon: 'alert',    value: fmtPct(m.errorRate),       status: vitalStatus(m.errorRate, this.limitsFor(THRESHOLD_METRIC_CODES.errorRate)) },
       typeof m.apdexScore === 'number' && {
         label: 'Apdex Score', icon: 'gauge' as const,
         value: m.apdexScore.toFixed(2),
-        status: apdexTone(m.apdexScore),
+        status: apdexTone(m.apdexScore, this.limitsFor(THRESHOLD_METRIC_CODES.apdex)),
         sub: 'User satisfaction',
       },
       typeof m.p95ApiResponseTime === 'number' && {
         label: 'P95 API', icon: 'activity' as const,
         value: fmt(m.p95ApiResponseTime),
-        status: { tone: 'info' as const, label: '95th pct' },
+        // Coloured only when a P95 rule exists; otherwise it stays informational, as before.
+        status: this.limitsByMetric()[THRESHOLD_METRIC_CODES.p95ApiResponse]
+          ? vitalStatus(m.p95ApiResponseTime, this.limitsFor(THRESHOLD_METRIC_CODES.p95ApiResponse))
+          : { tone: 'info' as const, label: '95th pct' },
         sub: 'API Response p95',
       },
       typeof m.bounceRate === 'number' && {
         label: 'Bounce Rate', icon: 'logout' as const,
         value: fmtPct(m.bounceRate),
-        status: bounceTone(m.bounceRate),
+        status: bounceTone(m.bounceRate, this.limitsFor(THRESHOLD_METRIC_CODES.bounceRate)),
         sub: 'Single-page sessions',
       },
       { label: 'Total API Calls', icon: 'bar', value: fmtN(m.totalApiCalls), status: { tone: 'info' as Tone, label: 'Volume' }, sub: 'In selected period' },

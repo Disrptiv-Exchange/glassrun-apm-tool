@@ -12,7 +12,8 @@ import {
   Role, User, AppComparisonStats, DeviceBreakdown, NetworkBreakdown, NetworkBreakdownRow,
   DeviceBreakdownRow, ColdStartStats, PluginPerformance, BatteryStorageCorrelation,
   BatteryStorageBucketRow, OfflineStats, ApdexTimePoint, BounceRateTimePoint, ExitPageRow,
-  ErrorFingerprintRow, ErrorOccurrence, ReleaseComparisonRow, PercentileStats
+  ErrorFingerprintRow, ErrorOccurrence, ReleaseComparisonRow, PercentileStats,
+  ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter
 } from '../models/apm-dashboard.models';
 
 /**
@@ -373,6 +374,171 @@ export class HttpApmDashboardDataProvider extends ApmDashboardDataProvider {
   }
 
   // ---- core transforms (ported) ------------------------------------------
+
+  // ---- thresholds & alerting ---------------------------------------------
+
+  getThresholdConfig(filter: ThresholdConfigFilter = {}): Observable<ThresholdConfig[]> {
+    return this.callAPMEndpoint('GetAPMThresholdConfig', {
+      Source: filter.source || 'all',
+      CompanyId: filter.companyId ?? 0,
+      MetricCode: filter.metricCode || 'all',
+      IncludeInactive: filter.includeInactive ? 1 : 0,
+    }).pipe(map(d => this.asRows(d, 'ThresholdConfig').map(r => this.mapThresholdConfig(r))));
+  }
+
+  getAlerts(filter: AlertsFilter = {}): Observable<ApmAlert[]> {
+    return this.callAPMEndpoint('GetAPMAlerts', {
+      StartDate: filter.startDate || '',
+      EndDate: filter.endDate || '',
+      Severity: filter.severity || 'all',
+      Status: filter.status || 'Active',
+      Source: filter.source || 'all',
+      MetricCode: filter.metricCode || 'all',
+      CompanyId: filter.companyId ?? 0,
+      Limit: filter.limit ?? 50,
+    }).pipe(map(d => this.asRows(d, 'Alert').map(r => this.mapAlert(r))));
+  }
+
+  saveThresholdConfig(rows: Partial<ThresholdConfig>[]): Observable<ThresholdConfig[]> {
+    // ISP_APM_SaveThresholdConfig COALESCEs every field against the stored row, so only the
+    // properties actually present here are changed. Omitted ones keep their current value.
+    const toPascal = (r: Partial<ThresholdConfig>) => {
+      const out: any = {};
+      const put = (k: string, v: any) => { if (v !== undefined) out[k] = v; };
+      put('APMThresholdConfigId', r.apmThresholdConfigId ?? 0);
+      put('MetricCode', r.metricCode);
+      put('MetricName', r.metricName);
+      put('Unit', r.unit);
+      put('SourceLogType', r.sourceLogType);
+      put('SourceColumn', r.sourceColumn);
+      put('Aggregation', r.aggregation);
+      put('AggregationParam', r.aggregationParam);
+      put('Scope', r.scope);
+      put('ScopeValue', r.scopeValue);
+      put('Source', r.source);
+      put('Direction', r.direction);
+      put('WarningValue', r.warningValue);
+      put('DangerValue', r.dangerValue);
+      put('RecoveryValue', r.recoveryValue);
+      put('MinSampleCount', r.minSampleCount);
+      put('EvaluationWindowMinutes', r.evaluationWindowMinutes);
+      put('ConsecutiveBreaches', r.consecutiveBreaches);
+      put('ConsecutiveClears', r.consecutiveClears);
+      put('SuppressionMinutes', r.suppressionMinutes);
+      if (r.notifyWarning !== undefined) out['NotifyWarning'] = r.notifyWarning ? 1 : 0;
+      if (r.notifyDanger  !== undefined) out['NotifyDanger']  = r.notifyDanger  ? 1 : 0;
+      if (r.isActive      !== undefined) out['IsActive']      = r.isActive      ? 1 : 0;
+      put('CompanyId', r.companyId);
+      return out;
+    };
+
+    const payload = rows.length === 1
+      ? toPascal(rows[0])
+      : { Batch: { Json: rows.map(toPascal) } };
+
+    return this.callAPMEndpoint('SaveAPMThresholdConfig', payload)
+      .pipe(map(d => this.asRows(d, 'ThresholdConfig').map(r => this.mapThresholdConfig(r))));
+  }
+
+  /**
+   * Normalizes a FOR XML payload into a row array.
+   *
+   * FOR XML emits a single row as an OBJECT and multiple rows as an ARRAY, so anything that
+   * only checks Array.isArray silently returns nothing when exactly one row comes back.
+   */
+  private asRows(data: any, nodeName: string): any[] {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    if (typeof data === 'string') {
+      try { const p = JSON.parse(data); return Array.isArray(p) ? p : [p]; } catch { return []; }
+    }
+    const node = data[nodeName]
+      ?? data?.Result?.[`${nodeName}s`]?.[nodeName]
+      ?? data?.[`${nodeName}s`]?.[nodeName];
+    if (node === undefined || node === null) {
+      // Already the row itself (the caller descended all the way).
+      return typeof data === 'object' && Object.keys(data).length ? [data] : [];
+    }
+    return Array.isArray(node) ? node : [node];
+  }
+
+  private mapThresholdConfig(r: any): ThresholdConfig {
+    return {
+      apmThresholdConfigId: this.num(r.APMThresholdConfigId ?? r.apmThresholdConfigId) ?? 0,
+      metricCode: r.MetricCode ?? r.metricCode ?? '',
+      metricName: r.MetricName ?? r.metricName ?? undefined,
+      unit: r.Unit ?? r.unit ?? undefined,
+      sourceLogType: r.SourceLogType ?? r.sourceLogType ?? null,
+      sourceColumn: r.SourceColumn ?? r.sourceColumn ?? null,
+      aggregation: (r.Aggregation ?? r.aggregation ?? 'Avg'),
+      aggregationParam: this.num(r.AggregationParam ?? r.aggregationParam),
+      scope: (r.Scope ?? r.scope ?? 'Global'),
+      scopeValue: r.ScopeValue ?? r.scopeValue ?? '',
+      source: r.Source ?? r.source ?? 'all',
+      direction: (r.Direction ?? r.direction ?? 'Above'),
+      warningValue: this.num(r.WarningValue ?? r.warningValue),
+      dangerValue: this.num(r.DangerValue ?? r.dangerValue),
+      recoveryValue: this.num(r.RecoveryValue ?? r.recoveryValue),
+      minSampleCount: this.num(r.MinSampleCount ?? r.minSampleCount) ?? undefined,
+      evaluationWindowMinutes: this.num(r.EvaluationWindowMinutes ?? r.evaluationWindowMinutes) ?? undefined,
+      consecutiveBreaches: this.num(r.ConsecutiveBreaches ?? r.consecutiveBreaches) ?? undefined,
+      consecutiveClears: this.num(r.ConsecutiveClears ?? r.consecutiveClears) ?? undefined,
+      suppressionMinutes: this.num(r.SuppressionMinutes ?? r.suppressionMinutes) ?? undefined,
+      notifyWarning: this.bool(r.NotifyWarning ?? r.notifyWarning),
+      notifyDanger: this.bool(r.NotifyDanger ?? r.notifyDanger),
+      isActive: this.bool(r.IsActive ?? r.isActive) ?? true,
+      companyId: this.num(r.CompanyId ?? r.companyId) ?? 0,
+      updatedDate: r.UpdatedDate ?? r.updatedDate ?? null,
+    };
+  }
+
+  private mapAlert(r: any): ApmAlert {
+    return {
+      apmAlertId: this.num(r.APMAlertId ?? r.apmAlertId) ?? 0,
+      apmThresholdConfigId: this.num(r.APMThresholdConfigId ?? r.apmThresholdConfigId) ?? 0,
+      metricCode: r.MetricCode ?? r.metricCode ?? '',
+      metricName: r.MetricName ?? r.metricName ?? undefined,
+      severity: (r.Severity ?? r.severity ?? 'Warning'),
+      status: (r.Status ?? r.status ?? 'Open'),
+      scope: r.Scope ?? r.scope ?? undefined,
+      scopeValue: r.ScopeValue ?? r.scopeValue ?? '',
+      source: r.Source ?? r.source ?? undefined,
+      observedValue: this.num(r.ObservedValue ?? r.observedValue),
+      thresholdValue: this.num(r.ThresholdValue ?? r.thresholdValue),
+      unit: r.Unit ?? r.unit ?? undefined,
+      sampleCount: this.num(r.SampleCount ?? r.sampleCount),
+      breachCount: this.num(r.BreachCount ?? r.breachCount) ?? undefined,
+      clearCount: this.num(r.ClearCount ?? r.clearCount) ?? undefined,
+      notifyCount: this.num(r.NotifyCount ?? r.notifyCount) ?? undefined,
+      windowStart: r.WindowStart ?? r.windowStart ?? null,
+      windowEnd: r.WindowEnd ?? r.windowEnd ?? null,
+      firstDetectedDate: r.FirstDetectedDate ?? r.firstDetectedDate ?? null,
+      lastDetectedDate: r.LastDetectedDate ?? r.lastDetectedDate ?? null,
+      resolvedDate: r.ResolvedDate ?? r.resolvedDate ?? null,
+      eventCode: r.EventCode ?? r.eventCode ?? null,
+      eventNotificationId: this.num(r.EventNotificationId ?? r.eventNotificationId),
+      overBy: this.num(r.OverBy ?? r.overBy),
+    };
+  }
+
+  /**
+   * Parses a numeric field, returning null rather than NaN.
+   *
+   * `Number(undefined) ?? fallback` does NOT work here: Number(undefined) is NaN, and `??`
+   * only catches null/undefined, so the NaN flows straight through to the UI.
+   */
+  private num(v: any): number | null {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  private bool(v: any): boolean | undefined {
+    if (v === null || v === undefined || v === '') return undefined;
+    if (typeof v === 'boolean') return v;
+    const s = String(v).toLowerCase();
+    return s === '1' || s === 'true';
+  }
 
   private unwrapResponse(response: any): any {
     if (!response) return response;

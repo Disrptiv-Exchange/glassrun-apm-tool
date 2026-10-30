@@ -1,5 +1,6 @@
-import { Observable } from 'rxjs';
+import { Observable, of } from 'rxjs';
 import {
+  ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter,
   PerformanceFilterBase, ApiPerformanceFilter, PagePerformanceFilter, TimeSeriesFilter,
   BaseDateFilter, PluginFilter, ExitPagesFilter, ErrorFingerprintsFilter, ErrorBreadcrumbsFilter,
   ReleaseComparisonFilter, ApdexFilter, BounceRateFilter, PercentilesFilter,
@@ -45,4 +46,27 @@ export abstract class ApmDashboardDataProvider {
   abstract getErrorBreadcrumbs(filter: ErrorBreadcrumbsFilter): Observable<ErrorOccurrence[]>;
   abstract getReleaseComparison(filter: ReleaseComparisonFilter): Observable<ReleaseComparisonRow[]>;
   abstract getPercentiles(filter: PercentilesFilter): Observable<PercentileStats>;
+
+  // -------------------------------------------------------------------------
+  // Thresholds & alerting
+  //
+  // Concrete rather than abstract on purpose: a host app that already implements this
+  // class keeps compiling without change, and simply shows no thresholds or alerts until
+  // it overrides these. Making them abstract would be a breaking change to every consumer.
+  // -------------------------------------------------------------------------
+
+  /** Threshold rules. Returning [] makes the KPI ribbon fall back to its built-in defaults. */
+  getThresholdConfig(_filter?: ThresholdConfigFilter): Observable<ThresholdConfig[]> {
+    return of([]);
+  }
+
+  /** Alert history. Returning [] hides the alerts panel. */
+  getAlerts(_filter?: AlertsFilter): Observable<ApmAlert[]> {
+    return of([]);
+  }
+
+  /** Upsert threshold rules from the admin screen. Returns the saved rows. */
+  saveThresholdConfig(_rows: Partial<ThresholdConfig>[]): Observable<ThresholdConfig[]> {
+    return of([]);
+  }
 }

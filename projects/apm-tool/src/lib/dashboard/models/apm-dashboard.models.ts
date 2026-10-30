@@ -387,3 +387,108 @@ export interface DashboardPageOption {
   value: string;   // controller name sent as pageUrl
   label: string;   // display label
 }
+
+// ---------------------------------------------------------------------------
+// Thresholds & alerting
+// ---------------------------------------------------------------------------
+
+/**
+ * A configurable threshold rule, served by SSP_APM_GetThresholdConfig.
+ *
+ * These replace the constants that used to be hardcoded in the KPI ribbon, so the same
+ * numbers colour a tile and raise an alert. `metricCode` is the key the ribbon matches
+ * a tile on; see THRESHOLD_METRIC_CODES.
+ */
+export interface ThresholdConfig {
+  apmThresholdConfigId: number;
+  metricCode: string;
+  metricName?: string;
+  unit?: 'ms' | 'pct' | 'score' | string;
+  sourceLogType?: string | null;
+  sourceColumn?: string | null;
+  aggregation: 'Avg' | 'P95' | 'Max' | 'Rate' | 'Apdex';
+  aggregationParam?: number | null;
+  scope: 'Global' | 'Source' | 'Page' | 'Api';
+  scopeValue?: string;
+  source?: string;
+  /** 'Below' means the metric breaches by FALLING past the limit, as Apdex does. */
+  direction: 'Above' | 'Below';
+  warningValue?: number | null;
+  dangerValue?: number | null;
+  /** Deliberately offset from warningValue; clearing at the firing level makes alerts flap. */
+  recoveryValue?: number | null;
+  minSampleCount?: number;
+  evaluationWindowMinutes?: number;
+  consecutiveBreaches?: number;
+  consecutiveClears?: number;
+  suppressionMinutes?: number;
+  notifyWarning?: boolean;
+  notifyDanger?: boolean;
+  isActive: boolean;
+  companyId?: number;
+  updatedDate?: string | null;
+}
+
+/** The metric codes the KPI ribbon knows how to apply. */
+export const THRESHOLD_METRIC_CODES = {
+  avgPageLoad: 'AVG_PAGE_LOAD_MS',
+  avgApiResponse: 'AVG_API_RESPONSE_MS',
+  p95ApiResponse: 'P95_API_RESPONSE_MS',
+  fcp: 'FCP_MS',
+  lcp: 'LCP_MS',
+  inp: 'INP_MS',
+  errorRate: 'ERROR_RATE_PCT',
+  apdex: 'APDEX',
+  bounceRate: 'BOUNCE_RATE_PCT',
+  coldStart: 'COLD_START_MS',
+} as const;
+
+export type AlertSeverity = 'Warning' | 'Danger';
+/** Pending = breaching but unconfirmed, so nothing has been notified yet. */
+export type AlertStatus = 'Pending' | 'Open' | 'Resolved';
+
+/** One alert instance, served by SSP_APM_GetAlerts. */
+export interface ApmAlert {
+  apmAlertId: number;
+  apmThresholdConfigId: number;
+  metricCode: string;
+  metricName?: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  scope?: string;
+  scopeValue?: string;
+  source?: string;
+  observedValue?: number | null;
+  thresholdValue?: number | null;
+  unit?: string;
+  sampleCount?: number | null;
+  breachCount?: number;
+  clearCount?: number;
+  notifyCount?: number;
+  windowStart?: string | null;
+  windowEnd?: string | null;
+  firstDetectedDate?: string | null;
+  lastDetectedDate?: string | null;
+  resolvedDate?: string | null;
+  eventCode?: string | null;
+  eventNotificationId?: number | null;
+  /** How far past the limit it ran, as a percentage. Lets the panel rank by real severity. */
+  overBy?: number | null;
+}
+
+export interface ThresholdConfigFilter {
+  source?: string;
+  companyId?: number;
+  metricCode?: string;
+  /** The admin grid wants inactive rules too; the ribbon does not. */
+  includeInactive?: boolean;
+}
+
+export interface AlertsFilter extends BaseDateFilter {
+  severity?: AlertSeverity | 'all';
+  /** 'Active' is shorthand for Pending + Open. */
+  status?: AlertStatus | 'Active' | 'all';
+  metricCode?: string;
+  companyId?: number;
+  limit?: number;
+}

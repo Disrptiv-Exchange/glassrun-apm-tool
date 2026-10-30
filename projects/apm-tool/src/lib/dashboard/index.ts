@@ -23,7 +23,10 @@ export type {
   BatteryStorageCorrelation, OfflineStats, ApdexTimePoint, BounceRateTimePoint,
   ExitPageRow, ErrorFingerprintRow, ErrorOccurrence, ReleaseComparisonRow, PercentileStats,
   Trend,
+  ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter,
+  AlertSeverity, AlertStatus,
 } from './models/apm-dashboard.models';
+export { THRESHOLD_METRIC_CODES } from './models/apm-dashboard.models';
 
 // Components
 export { ApmDashboardComponent } from './components/apm-dashboard.component';
@@ -43,6 +46,9 @@ export { ApmMobileTabComponent } from './components/apm-mobile-tab.component';
 export { ApmNetworkBreakdownChartComponent } from './components/apm-network-breakdown-chart.component';
 export { ApmUserExperienceTabComponent } from './components/apm-user-experience-tab.component';
 export { ApmAppsComparisonChartComponent } from './components/apm-apps-comparison-chart.component';
+
+// Thresholds & alerting
+export { ApmAlertsPanelComponent } from './components/apm-alerts-panel.component';
 
 // Chart kit
 export { ApmComboChartComponent } from './charts/apm-combo-chart.component';
