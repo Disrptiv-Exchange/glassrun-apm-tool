@@ -49,6 +49,7 @@ export { ApmAppsComparisonChartComponent } from './components/apm-apps-compariso
 
 // Thresholds & alerting
 export { ApmAlertsPanelComponent } from './components/apm-alerts-panel.component';
+export { ApmHistoryPanelComponent } from './components/apm-history-panel.component';
 
 // Chart kit
 export { ApmComboChartComponent } from './charts/apm-combo-chart.component';

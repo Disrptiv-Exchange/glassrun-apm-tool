@@ -37,6 +37,7 @@ import { ApmReleaseComparisonTableComponent } from './apm-release-comparison-tab
 import { ApmMobileTabComponent } from './apm-mobile-tab.component';
 import { ApmNetworkBreakdownChartComponent } from './apm-network-breakdown-chart.component';
 import { ApmUserExperienceTabComponent } from './apm-user-experience-tab.component';
+import { ApmHistoryPanelComponent } from './apm-history-panel.component';
 import { ApmAppsComparisonChartComponent } from './apm-apps-comparison-chart.component';
 import { ApmAlertsPanelComponent } from './apm-alerts-panel.component';
 
@@ -50,6 +51,10 @@ const PRESETS: Preset[] = [
   { label: '24h', full: 'Last 24 hours', hours: 24 },
   { label: '7d',  full: 'Last 7 days',  days: 7   },
   { label: '30d', full: 'Last 30 days', days: 30  },
+  // These two are what take the screen past the raw-retention window and into the
+  // rollup tier. Selecting one is what flips the Trends tab to the history panel.
+  { label: '3m',  full: 'Last 3 months', days: 90  },
+  { label: '6m',  full: 'Last 6 months', days: 182 },
 ];
 
 @Component({
@@ -69,6 +74,7 @@ const PRESETS: Preset[] = [
     ApmMobileTabComponent,
     ApmNetworkBreakdownChartComponent,
     ApmUserExperienceTabComponent,
+    ApmHistoryPanelComponent,
     ApmAppsComparisonChartComponent,
     ApmAlertsPanelComponent,
     NgTemplateOutlet,
@@ -444,6 +450,22 @@ const PRESETS: Preset[] = [
 
     <!-- Trends -->
     <div [class]="'pd-tab-panel' + (activeTab() === 'trends' ? ' pd-tab-panel--active' : '')">
+      <!-- HISTORY FIRST when a long range is selected.
+           The live time-series charts below read raw rows, so beyond the raw-retention window
+           they come back empty. Rather than show four empty charts and leave the user to work
+           out why, a long range puts the aggregated history at the top and keeps the live
+           charts underneath for whatever part of the range raw data still covers. Same tab,
+           same filters, no second screen to go and find. -->
+      @if (isHistoricalRange()) {
+        <div style="margin-bottom:16px">
+          <apm-history-panel
+            [source]="selectedSource()"
+            [roleId]="selectedRole()"
+            [pageUrl]="selectedPage()"
+            [months]="historyMonths()"
+          />
+        </div>
+      }
       <div style="display:flex;flex-direction:column;gap:16px">
         <!-- 4 time-series charts: page_load_time, api_response_time, fcp, inp -->
         <div class="pd-overview-grid">
@@ -593,6 +615,29 @@ export class ApmDashboardComponent implements OnInit, OnDestroy {
 
   // ---- filter state ----
   readonly presets = PRESETS;
+
+  /**
+   * True once the selected range reaches past roughly the raw-retention window.
+   *
+   * 31 days rather than exactly APMKeepRawDays: this only decides which panel leads, and being
+   * generous means the history panel appears slightly before raw data actually runs out, so the
+   * hand-over is a gradual overlap rather than a cliff where the charts empty out.
+   */
+  isHistoricalRange = computed(() => {
+    const r = this.dateRange();
+    if (!r.from || !r.to) return false;
+    const days = (r.to.getTime() - r.from.getTime()) / 86400000;
+    return days > 31;
+  });
+
+  /** Months of history to request, derived from the selected range. */
+  historyMonths = computed(() => {
+    const r = this.dateRange();
+    if (!r.from || !r.to) return 6;
+    const days = (r.to.getTime() - r.from.getTime()) / 86400000;
+    return Math.max(1, Math.min(12, Math.ceil(days / 30)));
+  });
+
 
   dateRange     = signal<DateRange>({ from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), to: new Date() });
   selectedSource = signal<string>(this.config.defaultSource ?? 'Portal');

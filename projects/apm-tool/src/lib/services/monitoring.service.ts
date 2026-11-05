@@ -1543,9 +1543,24 @@ export class MonitoringService {
     const apiMethod = context.apiMethod || context.method || null;
     const apiStatusCode = context.apiStatusCode || context.status || null;
     const jsDurationMs = context.jsDurationMs || (typeof context.jsDuration === 'number' ? context.jsDuration : null);
-    // For API_CALL, prefer httpDurationMs from resource timing; fallback to jsDurationMs when null so dashboard has a usable duration
+    // For API_CALL, prefer httpDurationMs from resource timing; fall back to jsDurationMs when
+    // resource timing gave us nothing usable, so the dashboard has a real duration.
+    //
+    // A LITERAL ZERO COUNTS AS "NOTHING USABLE", and that is the point of this guard.
+    //
+    // The previous condition only fell back when rawHttpMs was null or '', so a 0 passed
+    // straight through. On the native apps that is exactly what happens: Capacitor sends HTTP
+    // through the native bridge, so the browser has no real Resource Timing entry for the call
+    // and `responseEnd - startTime` comes out as 0. Measured on real data, 57% of DeliveryAPP
+    // calls (2916 rows, 100% of the iOS ones) were stored with HttpDurationMs = 0 while
+    // jsDurationMs held the correct wall-clock figure all along. Those zeros then dragged every
+    // average down, because a zero is a value and SUM/COUNT has no way to know it is a
+    // non-measurement.
+    //
+    // No API call takes 0ms, so treating 0 as absent cannot discard a real measurement.
     const rawHttpMs = context.httpDurationMs ?? (typeof context.httpDuration === 'number' ? context.httpDuration : null);
-    const httpDurationMs = logType === 'API_CALL' && (rawHttpMs == null || rawHttpMs === '') && typeof jsDurationMs === 'number'
+    const hasUsableHttpMs = rawHttpMs != null && rawHttpMs !== '' && Number(rawHttpMs) > 0;
+    const httpDurationMs = logType === 'API_CALL' && !hasUsableHttpMs && typeof jsDurationMs === 'number'
       ? jsDurationMs
       : rawHttpMs;
 

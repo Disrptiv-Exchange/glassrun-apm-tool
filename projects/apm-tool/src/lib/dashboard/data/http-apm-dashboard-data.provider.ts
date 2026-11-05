@@ -13,7 +13,8 @@ import {
   DeviceBreakdownRow, ColdStartStats, PluginPerformance, BatteryStorageCorrelation,
   BatteryStorageBucketRow, OfflineStats, ApdexTimePoint, BounceRateTimePoint, ExitPageRow,
   ErrorFingerprintRow, ErrorOccurrence, ReleaseComparisonRow, PercentileStats,
-  ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter
+  ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter,
+  TrendHistoryFilter, TrendHistoryResult, TrendHistoryPoint, TrendHistoryMeta, TrendGranularity
 } from '../models/apm-dashboard.models';
 
 /**
@@ -376,6 +377,64 @@ export class HttpApmDashboardDataProvider extends ApmDashboardDataProvider {
   // ---- core transforms (ported) ------------------------------------------
 
   // ---- thresholds & alerting ---------------------------------------------
+
+  getTrendHistory(filter: TrendHistoryFilter = {}): Observable<TrendHistoryResult> {
+    return this.callAPMEndpoint('GetAPMTrendHistory', {
+      StartDate: filter.startDate || '',
+      EndDate: filter.endDate || '',
+      Granularity: filter.granularity || 'auto',
+      Source: filter.source || 'all',
+      RoleId: filter.roleId || 'all',
+      PageUrl: filter.pageUrl || 'all',
+    }).pipe(map(d => ({
+      points: this.asRows(d, 'TrendHistory').map(r => this.mapTrendPoint(r)),
+      meta: this.mapTrendMeta(d?.Meta),
+    })));
+  }
+
+  private mapTrendPoint(r: any): TrendHistoryPoint {
+    return {
+      bucketStart: String(r?.BucketStart ?? ''),
+      granularity: String(r?.Granularity ?? 'day') as TrendGranularity,
+      bucketLabel: String(r?.BucketLabel ?? ''),
+      totalEvents: this.num(r?.TotalEvents) ?? 0,
+      apiCalls: this.num(r?.ApiCalls) ?? 0,
+      pageViews: this.num(r?.PageViews) ?? 0,
+      errors: this.num(r?.Errors) ?? 0,
+      coldStarts: this.num(r?.ColdStarts) ?? 0,
+      apiErrors: this.num(r?.ApiErrors) ?? 0,
+      avgApiMs: this.num(r?.AvgApiMs),
+      p95ApiMs: this.num(r?.P95ApiMs),
+      maxApiMs: this.num(r?.MaxApiMs),
+      avgPageLoadMs: this.num(r?.AvgPageLoadMs),
+      p95PageLoadMs: this.num(r?.P95PageLoadMs),
+      avgNavigationMs: this.num(r?.AvgNavigationMs),
+      avgFcpMs: this.num(r?.AvgFcpMs),
+      avgLcpMs: this.num(r?.AvgLcpMs),
+      avgInpMs: this.num(r?.AvgInpMs),
+      avgTtfbMs: this.num(r?.AvgTtfbMs),
+      avgColdStartMs: this.num(r?.AvgColdStartMs),
+      avgMemoryMB: this.num(r?.AvgMemoryMB),
+      errorRatePct: this.num(r?.ErrorRatePct),
+      apdex: this.num(r?.Apdex),
+      distinctUsers: this.num(r?.DistinctUsers),
+      isUserCountExact: this.bool(r?.IsUserCountExact) === true,
+    };
+  }
+
+  private mapTrendMeta(m: any): TrendHistoryMeta | null {
+    if (!m || typeof m !== 'object') return null;
+    return {
+      granularity: String(m?.Granularity ?? 'day') as TrendGranularity,
+      startDate: String(m?.StartDate ?? ''),
+      endDate: String(m?.EndDate ?? ''),
+      rangeDays: this.num(m?.RangeDays) ?? 0,
+      dataSource: String(m?.DataSource ?? 'rollup-daily'),
+      rollupCoversUpTo: m?.RollupCoversUpTo ? String(m.RollupCoversUpTo) : null,
+      earliestAvailable: m?.EarliestAvailable ? String(m.EarliestAvailable) : null,
+      supportsUserFilter: this.bool(m?.SupportsUserFilter) === true,
+    };
+  }
 
   getThresholdConfig(filter: ThresholdConfigFilter = {}): Observable<ThresholdConfig[]> {
     return this.callAPMEndpoint('GetAPMThresholdConfig', {

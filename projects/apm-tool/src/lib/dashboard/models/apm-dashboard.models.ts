@@ -492,3 +492,80 @@ export interface AlertsFilter extends BaseDateFilter {
   companyId?: number;
   limit?: number;
 }
+
+// ── Long-range history ──────────────────────────────────────────────────────────────────────
+// Served from the APMRollup_* daily tier instead of raw AppPerformanceLogs rows, which is what
+// makes a six-month range answerable once raw rows have been purged. Numbers arrive already
+// aggregated; p95 is reconstructed from stored histogram bands and is accurate to roughly 2%,
+// so treat it as a trend indicator rather than an SLA measurement.
+
+export type TrendGranularity = 'day' | 'week' | 'month';
+
+export interface TrendHistoryPoint {
+  bucketStart: string;
+  granularity: TrendGranularity;
+  /** Chart-axis ready: '03 Nov 2026' | 'w/c 02 Nov 2026' | 'November 2026'. */
+  bucketLabel: string;
+
+  totalEvents: number;
+  apiCalls: number;
+  pageViews: number;
+  errors: number;
+  coldStarts: number;
+  apiErrors: number;
+
+  // null, never 0, when a bucket had no samples for that metric. A gap in the line is honest;
+  // a zero reads as "instant" and flatters the chart.
+  avgApiMs: number | null;
+  p95ApiMs: number | null;
+  maxApiMs: number | null;
+  avgPageLoadMs: number | null;
+  p95PageLoadMs: number | null;
+  avgNavigationMs: number | null;
+  avgFcpMs: number | null;
+  avgLcpMs: number | null;
+  avgInpMs: number | null;
+  avgTtfbMs: number | null;
+  avgColdStartMs: number | null;
+  avgMemoryMB: number | null;
+
+  errorRatePct: number | null;
+  apdex: number | null;
+
+  distinctUsers: number | null;
+  /**
+   * False at week and month grain, where distinctUsers is the busiest single DAY in the bucket
+   * rather than a total — a distinct count cannot be summed. Label it as approximate.
+   */
+  isUserCountExact: boolean;
+}
+
+export interface TrendHistoryMeta {
+  granularity: TrendGranularity;
+  startDate: string;
+  endDate: string;
+  rangeDays: number;
+  /** 'rollup-daily'. Lets the screen badge the data source instead of leaving it implied. */
+  dataSource: string;
+  /** How far the rollup has got. Anything later is not aggregated yet. */
+  rollupCoversUpTo: string | null;
+  /** Oldest bucket available; a range starting earlier has no data for the gap. */
+  earliestAvailable: string | null;
+  /** Always false: the rollup drops UserId, so history cannot answer a per-user question. */
+  supportsUserFilter: boolean;
+}
+
+export interface TrendHistoryFilter {
+  startDate?: string;
+  endDate?: string;
+  /** 'auto' (the default) lets the procedure pick the grain from the range length. */
+  granularity?: TrendGranularity | 'auto';
+  source?: string;
+  roleId?: string;
+  pageUrl?: string;
+}
+
+export interface TrendHistoryResult {
+  points: TrendHistoryPoint[];
+  meta: TrendHistoryMeta | null;
+}

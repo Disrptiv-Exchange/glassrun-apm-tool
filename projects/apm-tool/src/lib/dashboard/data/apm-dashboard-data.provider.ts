@@ -1,6 +1,7 @@
 import { Observable, of } from 'rxjs';
 import {
   ThresholdConfig, ApmAlert, ThresholdConfigFilter, AlertsFilter,
+  TrendHistoryFilter, TrendHistoryResult,
   PerformanceFilterBase, ApiPerformanceFilter, PagePerformanceFilter, TimeSeriesFilter,
   BaseDateFilter, PluginFilter, ExitPagesFilter, ErrorFingerprintsFilter, ErrorBreadcrumbsFilter,
   ReleaseComparisonFilter, ApdexFilter, BounceRateFilter, PercentilesFilter,
@@ -56,6 +57,16 @@ export abstract class ApmDashboardDataProvider {
   // -------------------------------------------------------------------------
 
   /** Threshold rules. Returning [] makes the KPI ribbon fall back to its built-in defaults. */
+  /**
+   * Long-range history from the rollup tier. Non-abstract for the same reason as the
+   * threshold methods below: making it abstract would break every existing consumer that
+   * already implements this class. A host that does not override it simply shows no
+   * history rather than failing to compile.
+   */
+  getTrendHistory(_filter?: TrendHistoryFilter): Observable<TrendHistoryResult> {
+    return of({ points: [], meta: null });
+  }
+
   getThresholdConfig(_filter?: ThresholdConfigFilter): Observable<ThresholdConfig[]> {
     return of([]);
   }
